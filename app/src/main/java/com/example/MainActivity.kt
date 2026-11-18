@@ -53,9 +53,24 @@ class MainActivity : ComponentActivity() {
 fun PulseRelayApp(
     isDarkTheme: Boolean,
     onToggleTheme: () -> Unit,
-    auth: FirebaseAuth = Firebase.auth
+    authOverride: FirebaseAuth? = null
 ) {
     val context = LocalContext.current
+    val auth = remember(context, authOverride) {
+        authOverride ?: runCatching {
+            if (com.google.firebase.FirebaseApp.getApps(context).isNotEmpty()) Firebase.auth else null
+        }.getOrNull()
+    }
+    if (auth == null) {
+        LandingScreen(
+            isAuthenticated = false,
+            isDarkTheme = isDarkTheme,
+            onToggleTheme = onToggleTheme,
+            onEnterConsole = {},
+            onAuthSuccess = {}
+        )
+        return
+    }
     val scope = rememberCoroutineScope()
     val credentialManager = remember(context) { CredentialManager.create(context) }
 
