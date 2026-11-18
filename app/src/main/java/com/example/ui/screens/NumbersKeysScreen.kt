@@ -129,6 +129,11 @@ fun NumbersKeysScreen(
                 numbers = data.phoneNumbers,
                 isBusy = isBusy,
                 onOpenProvision = { showProvisionDialog = true },
+                onQuickProvisionPakistan = {
+                    val pk = GlobalCountryCatalog.countries.firstOrNull { it.countryCode == "PK" }
+                        ?: GlobalCountryCatalog.countries.first()
+                    onProvisionNumber(pk, NumberType.LOCAL, "PulsePK", planTier)
+                },
                 onEditNumber = { editingNumber = it },
                 onSetDefault = { num ->
                     onUpdateNumber(num, num.webhookUrl, NumberStatus.fromRaw(num.status), true)
@@ -186,12 +191,14 @@ private fun NumbersListSection(
     numbers: List<PhoneNumberRecord>,
     isBusy: Boolean,
     onOpenProvision: () -> Unit,
+    onQuickProvisionPakistan: () -> Unit,
     onEditNumber: (PhoneNumberRecord) -> Unit,
     onSetDefault: (PhoneNumberRecord) -> Unit,
     onReleaseNumber: (String) -> Unit,
     onCopied: (String) -> Unit
 ) {
     val clipboard = LocalClipboardManager.current
+    val hasPakistanNumber = numbers.any { it.countryCode == "PK" }
 
     LazyColumn(
         modifier = Modifier.fillMaxSize(),
@@ -200,19 +207,41 @@ private fun NumbersListSection(
         verticalArrangement = Arrangement.spacedBy(10.dp)
     ) {
         item {
-            Button(
-                onClick = onOpenProvision,
-                enabled = !isBusy,
+            Column(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .widthIn(max = 880.dp)
-                    .testTag("provision_number_button"),
-                shape = RoundedCornerShape(12.dp),
-                colors = ButtonDefaults.buttonColors(containerColor = PulseCrimson)
+                    .widthIn(max = 880.dp),
+                verticalArrangement = Arrangement.spacedBy(8.dp)
             ) {
-                Icon(Icons.Rounded.Add, contentDescription = null, tint = Color.White)
-                Spacer(Modifier.width(6.dp))
-                Text("Provision Global Phone Number", color = Color.White)
+                Button(
+                    onClick = onOpenProvision,
+                    enabled = !isBusy,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .testTag("provision_number_button"),
+                    shape = RoundedCornerShape(12.dp),
+                    colors = ButtonDefaults.buttonColors(containerColor = PulseCrimson)
+                ) {
+                    Icon(Icons.Rounded.Add, contentDescription = null, tint = Color.White)
+                    Spacer(Modifier.width(6.dp))
+                    Text("Provision Global Phone Number", color = Color.White)
+                }
+
+                if (!hasPakistanNumber) {
+                    OutlinedButton(
+                        onClick = onQuickProvisionPakistan,
+                        enabled = !isBusy,
+                        shape = RoundedCornerShape(12.dp),
+                        border = BorderStroke(1.dp, SignalEmerald.copy(alpha = 0.6f)),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .testTag("quick_provision_pk_button")
+                    ) {
+                        Icon(Icons.Rounded.Public, contentDescription = null, tint = SignalEmerald)
+                        Spacer(Modifier.width(6.dp))
+                        Text("Quick-Add Pakistan (+92) Sender Number", color = SignalEmerald)
+                    }
+                }
             }
         }
 

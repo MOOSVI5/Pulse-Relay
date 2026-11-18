@@ -121,6 +121,23 @@
         "updatedAt": { "type": "string", "format": "date-time" }
       },
       "required": ["userId", "githubUsername", "repoFullName", "notifyToNumber", "triggerMode", "lastCommitSha", "lastCommitMessage", "active", "createdAt", "updatedAt"]
+    },
+    "TeamProfile": {
+      "title": "TeamProfile",
+      "description": "Switchable workspace profile and team member role assignment.",
+      "type": "object",
+      "properties": {
+        "userId": { "type": "string" },
+        "displayName": { "type": "string" },
+        "contactHandle": { "type": "string" },
+        "role": { "type": "string", "enum": ["ADMIN", "OTP_OPERATOR", "DEVELOPER", "VIEWER"] },
+        "ownerAdmin": { "type": "boolean" },
+        "active": { "type": "boolean" },
+        "dailyOtpLimit": { "type": "integer" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["userId", "displayName", "contactHandle", "role", "ownerAdmin", "active", "dailyOtpLimit", "createdAt", "updatedAt"]
     }
   },
   "firestore": {
@@ -147,6 +164,10 @@
     "/users/{userId}/github_integrations/{integrationId}": {
       "schema": { "$ref": "#/entities/GitHubIntegration" },
       "description": "GitHub repositories linked to PulseRelay SMS & OTP alerts."
+    },
+    "/users/{userId}/team_profiles/{profileId}": {
+      "schema": { "$ref": "#/entities/TeamProfile" },
+      "description": "Admin and team member profiles with assigned RBAC roles."
     }
   }
 }

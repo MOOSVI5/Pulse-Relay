@@ -306,3 +306,77 @@ test("GitHub Integrations: owner CRUD succeeds, immutable repo/owner & cross-use
   await assertFails(bobDb.collection("users").doc(ALICE_UID).collection("github_integrations").get());
   await assertFails(bobDb.collection("users").doc(ALICE_UID).collection("github_integrations").doc("gh_1").delete());
 });
+
+test("Team Profiles: owner CRUD, role updates, ownerAdmin protection & cross-user denial", async () => {
+  const aliceDb = testEnv.authenticatedContext(ALICE_UID).firestore();
+  const bobDb = testEnv.authenticatedContext(BOB_UID).firestore();
+  const ts = new Date(Date.now() - 5000);
+
+  const adminRef = aliceDb.collection("users").doc(ALICE_UID).collection("team_profiles").doc("profile_admin");
+  await assertSucceeds(
+    adminRef.set({
+      userId: ALICE_UID,
+      displayName: "Admin",
+      contactHandle: "owner@example.com",
+      role: "ADMIN",
+      ownerAdmin: true,
+      active: true,
+      dailyOtpLimit: 10000,
+      createdAt: ts,
+      updatedAt: ts,
+    })
+  );
+
+  // Owner Admin cannot be downgraded or deleted
+  await assertFails(
+    adminRef.update({
+      role: "VIEWER",
+      updatedAt: new Date(Date.now() - 1000),
+    })
+  );
+  await assertFails(adminRef.delete());
+
+  // Team member profile create, role update, and delete succeed
+  const memberRef = aliceDb.collection("users").doc(ALICE_UID).collection("team_profiles").doc("member_1");
+  await assertSucceeds(
+    memberRef.set({
+      userId: ALICE_UID,
+      displayName: "Ali Khan",
+      contactHandle: "+923001234567",
+      role: "OTP_OPERATOR",
+      ownerAdmin: false,
+      active: true,
+      dailyOtpLimit: 500,
+      createdAt: ts,
+      updatedAt: ts,
+    })
+  );
+  await assertSucceeds(aliceDb.collection("users").doc(ALICE_UID).collection("team_profiles").get());
+  await assertSucceeds(
+    memberRef.update({
+      role: "DEVELOPER",
+      active: false,
+      updatedAt: new Date(Date.now() - 500),
+    })
+  );
+  await assertSucceeds(memberRef.delete());
+
+  // Invalid role fails
+  await assertFails(
+    aliceDb.collection("users").doc(ALICE_UID).collection("team_profiles").doc("member_bad").set({
+      userId: ALICE_UID,
+      displayName: "Bad Role",
+      contactHandle: "",
+      role: "SUPERUSER",
+      ownerAdmin: false,
+      active: true,
+      dailyOtpLimit: 100,
+      createdAt: ts,
+      updatedAt: ts,
+    })
+  );
+
+  // Cross-user access fails
+  await assertFails(bobDb.collection("users").doc(ALICE_UID).collection("team_profiles").get());
+  await assertFails(bobDb.collection("users").doc(ALICE_UID).collection("team_profiles").doc("profile_admin").get());
+});

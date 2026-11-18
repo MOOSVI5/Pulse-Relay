@@ -17,6 +17,8 @@ import com.example.data.model.OtpVerificationRecord
 import com.example.data.model.PhoneNumberRecord
 import com.example.data.model.PlanTier
 import com.example.data.model.SmsMessageRecord
+import com.example.data.model.TeamProfileRecord
+import com.example.data.model.TeamRole
 import com.google.firebase.Firebase
 import com.google.firebase.auth.FirebaseAuth
 import com.google.firebase.auth.auth
@@ -138,6 +140,52 @@ class PulseRepository(
         )
     }
 
+    fun observeTeamProfiles(uid: String): Flow<List<TeamProfileRecord>> = flow {
+        require(uid.isNotBlank()) { "Authenticated userId required" }
+        val colRef = db.collection("users").document(uid).collection("team_profiles")
+            .orderBy("createdAt", Query.Direction.ASCENDING)
+        emitAll(
+            wrapSnapshotFlow("users/$uid/team_profiles", uid, OperationType.LIST, colRef.snapshots()).map { snapshot ->
+                snapshot.toObjects(TeamProfileRecord::class.java, DocumentSnapshot.ServerTimestampBehavior.ESTIMATE)
+            }
+        )
+    }
+
+    suspend fun ensureAdminProfileSeeded(): Result<Unit> {
+        var docPath = "users"
+        return try {
+            val uid = requireUserId()
+            val adminRef = db.collection("users").document(uid)
+                .collection("team_profiles").document("profile_admin")
+            docPath = adminRef.path
+            val snap = adminRef.get().await()
+            if (!snap.exists()) {
+                val handle = auth.currentUser?.email?.takeIf { it.isNotBlank() }
+                    ?: auth.currentUser?.phoneNumber?.takeIf { it.isNotBlank() }
+                    ?: "Workspace Owner"
+                adminRef.set(
+                    mapOf(
+                        "userId" to uid,
+                        "displayName" to "Admin",
+                        "contactHandle" to handle.take(120),
+                        "role" to TeamRole.ADMIN.name,
+                        "ownerAdmin" to true,
+                        "active" to true,
+                        "dailyOtpLimit" to 10000L,
+                        "createdAt" to FieldValue.serverTimestamp(),
+                        "updatedAt" to FieldValue.serverTimestamp()
+                    )
+                ).await()
+            }
+            Result.success(Unit)
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            handleFirestoreError(e, OperationType.WRITE, docPath)
+            Result.failure(e)
+        }
+    }
+
     suspend fun seedWorkspaceIfNeeded(): Result<Unit> {
         var docPath = "users"
         return try {
@@ -146,6 +194,7 @@ class PulseRepository(
             docPath = userDocRef.path
             val existing = userDocRef.get().await()
             if (existing.exists()) {
+                ensureAdminProfileSeeded()
                 return Result.success(Unit)
             }
 
@@ -236,6 +285,24 @@ class PulseRepository(
                 )
             )
             batch.set(
+                numbersCol.document("num_pk_khi"),
+                mapOf(
+                    "userId" to uid,
+                    "e164Number" to "+923008904321",
+                    "countryCode" to "PK",
+                    "countryName" to "Pakistan",
+                    "regionLabel" to "Karachi / Lahore, PK",
+                    "numberType" to NumberType.LOCAL.name,
+                    "capabilities" to "SMS,OTP",
+                    "monthlyPriceUsd" to 0.0,
+                    "webhookUrl" to "",
+                    "defaultSender" to false,
+                    "status" to NumberStatus.ACTIVE.name,
+                    "createdAt" to FieldValue.serverTimestamp(),
+                    "updatedAt" to FieldValue.serverTimestamp()
+                )
+            )
+            batch.set(
                 numbersCol.document("num_jp_tyo"),
                 mapOf(
                     "userId" to uid,
@@ -249,6 +316,24 @@ class PulseRepository(
                     "webhookUrl" to "",
                     "defaultSender" to false,
                     "status" to NumberStatus.ACTIVE.name,
+                    "createdAt" to FieldValue.serverTimestamp(),
+                    "updatedAt" to FieldValue.serverTimestamp()
+                )
+            )
+
+            val ownerHandle = auth.currentUser?.email?.takeIf { it.isNotBlank() }
+                ?: auth.currentUser?.phoneNumber?.takeIf { it.isNotBlank() }
+                ?: "Workspace Owner"
+            batch.set(
+                userDocRef.collection("team_profiles").document("profile_admin"),
+                mapOf(
+                    "userId" to uid,
+                    "displayName" to "Admin",
+                    "contactHandle" to ownerHandle.take(120),
+                    "role" to TeamRole.ADMIN.name,
+                    "ownerAdmin" to true,
+                    "active" to true,
+                    "dailyOtpLimit" to 10000L,
                     "createdAt" to FieldValue.serverTimestamp(),
                     "updatedAt" to FieldValue.serverTimestamp()
                 )
@@ -842,6 +927,106 @@ class PulseRepository(
             val uid = requireUserId()
             require(integrationId.isNotBlank()) { "Integration ID required" }
             val docRef = db.collection("users").document(uid).collection("github_integrations").document(integrationId)
+            docPath = docRef.path
+            docRef.delete().await()
+            Result.success(Unit)
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            handleFirestoreError(e, OperationType.DELETE, docPath)
+            Result.failure(e)
+        }
+    }
+
+    suspend fun createTeamProfile(
+        displayName: String,
+        contactHandle: String,
+        role: TeamRole,
+        dailyOtpLimit: Long
+    ): Result<TeamProfileRecord> {
+        var docPath = "users"
+        return try {
+            val uid = requireUserId()
+            val cleanName = displayName.trim().take(80)
+            require(cleanName.isNotBlank()) { "Profile name cannot be empty" }
+            val cleanContact = contactHandle.trim().take(120)
+            val safeLimit = dailyOtpLimit.coerceIn(1L, 1_000_000L)
+            val docRef = db.collection("users").document(uid).collection("team_profiles").document()
+            docPath = docRef.path
+            docRef.set(
+                mapOf(
+                    "userId" to uid,
+                    "displayName" to cleanName,
+                    "contactHandle" to cleanContact,
+                    "role" to role.name,
+                    "ownerAdmin" to false,
+                    "active" to true,
+                    "dailyOtpLimit" to safeLimit,
+                    "createdAt" to FieldValue.serverTimestamp(),
+                    "updatedAt" to FieldValue.serverTimestamp()
+                )
+            ).await()
+            Result.success(
+                TeamProfileRecord(
+                    id = docRef.id,
+                    userId = uid,
+                    displayName = cleanName,
+                    contactHandle = cleanContact,
+                    role = role.name,
+                    ownerAdmin = false,
+                    active = true,
+                    dailyOtpLimit = safeLimit
+                )
+            )
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            handleFirestoreError(e, OperationType.CREATE, docPath)
+            Result.failure(e)
+        }
+    }
+
+    suspend fun updateTeamProfile(
+        profileId: String,
+        displayName: String,
+        contactHandle: String,
+        role: TeamRole,
+        active: Boolean,
+        dailyOtpLimit: Long
+    ): Result<Unit> {
+        var docPath = "users"
+        return try {
+            val uid = requireUserId()
+            require(profileId.isNotBlank()) { "Profile ID required" }
+            val cleanName = displayName.trim().take(80)
+            require(cleanName.isNotBlank()) { "Profile name cannot be empty" }
+            val docRef = db.collection("users").document(uid).collection("team_profiles").document(profileId)
+            docPath = docRef.path
+            docRef.update(
+                mapOf(
+                    "displayName" to cleanName,
+                    "contactHandle" to contactHandle.trim().take(120),
+                    "role" to role.name,
+                    "active" to active,
+                    "dailyOtpLimit" to dailyOtpLimit.coerceIn(1L, 1_000_000L),
+                    "updatedAt" to FieldValue.serverTimestamp()
+                )
+            ).await()
+            Result.success(Unit)
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            handleFirestoreError(e, OperationType.UPDATE, docPath)
+            Result.failure(e)
+        }
+    }
+
+    suspend fun deleteTeamProfile(profileId: String): Result<Unit> {
+        var docPath = "users"
+        return try {
+            val uid = requireUserId()
+            require(profileId.isNotBlank()) { "Profile ID required" }
+            val docRef = db.collection("users").document(uid).collection("team_profiles").document(profileId)
             docPath = docRef.path
             docRef.delete().await()
             Result.success(Unit)

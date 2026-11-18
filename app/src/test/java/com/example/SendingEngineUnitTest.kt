@@ -2,6 +2,7 @@ package com.example
 
 import com.example.data.model.GlobalCountryCatalog
 import com.example.data.model.PlanTier
+import com.example.data.model.TeamRole
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
@@ -12,6 +13,11 @@ class SendingEngineUnitTest {
 
     @Test
     fun resolveDestination_matchesLongestDialPrefix() {
+        val pk = GlobalCountryCatalog.resolveDestination("+923001234567")
+        assertEquals("PK", pk.countryCode)
+        assertEquals("Pakistan", pk.countryName)
+        assertEquals("+92", pk.dialPrefix)
+
         val us = GlobalCountryCatalog.resolveDestination("+14155550199")
         assertEquals("US", us.countryCode)
 
@@ -26,8 +32,27 @@ class SendingEngineUnitTest {
     }
 
     @Test
+    fun teamRole_permissionsMatchRoleCapabilities() {
+        assertTrue(TeamRole.ADMIN.canControlService)
+        assertTrue(TeamRole.ADMIN.canManageTeam)
+        assertTrue(TeamRole.ADMIN.canSendOtp)
+
+        assertTrue(TeamRole.OTP_OPERATOR.canSendOtp)
+        assertFalse(TeamRole.OTP_OPERATOR.canManageTeam)
+        assertFalse(TeamRole.OTP_OPERATOR.canControlService)
+
+        assertTrue(TeamRole.DEVELOPER.canManageNumbersAndKeys)
+        assertFalse(TeamRole.DEVELOPER.canManageTeam)
+
+        assertFalse(TeamRole.VIEWER.canSendOtp)
+        assertFalse(TeamRole.VIEWER.canSendSms)
+        assertEquals(TeamRole.ADMIN, TeamRole.fromRaw("UNKNOWN_ROLE"))
+    }
+
+    @Test
     fun e164Validation_checksFormatStrictly() {
         val regex = Regex("^\\+[1-9]\\d{6,14}$")
+        assertTrue("+923001234567".matches(regex))
         assertTrue("+14155550199".matches(regex))
         assertTrue("+447700900412".matches(regex))
         assertFalse("4155550199".matches(regex))

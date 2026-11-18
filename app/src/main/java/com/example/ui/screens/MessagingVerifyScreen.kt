@@ -82,11 +82,13 @@ enum class MessagingSubTab(val label: String) {
 }
 
 private val globalQuickRecipients = listOf(
+    "PK +92" to "+923001234567",
     "US +1" to "+14155550199",
     "UK +44" to "+447700900412",
+    "AE +971" to "+971501234567",
+    "IN +91" to "+919820112233",
     "JP +81" to "+819044128890",
     "DE +49" to "+4915123456789",
-    "IN +91" to "+919820112233",
     "SG +65" to "+6581234567"
 )
 
@@ -101,6 +103,7 @@ fun MessagingVerifyScreen(
     onSendSms: (to: String, from: String, body: String) -> Unit,
     onSendOtp: (to: String, from: String, service: String, length: Int, channel: OtpChannel) -> Unit,
     onCheckOtp: (to: String, code: String) -> Unit,
+    onRevokeOtp: (OtpVerificationRecord) -> Unit,
     onClearOtpCheck: () -> Unit
 ) {
     var activeTab by remember(initialSubTab) { mutableStateOf(initialSubTab) }
@@ -145,6 +148,7 @@ fun MessagingVerifyScreen(
                 lastOtpCheck = lastOtpCheck,
                 onSendOtp = onSendOtp,
                 onCheckOtp = onCheckOtp,
+                onRevokeOtp = onRevokeOtp,
                 onClearOtpCheck = onClearOtpCheck
             )
             MessagingSubTab.LOGS -> MessageLogsSection(messages = data.smsMessages)
@@ -166,7 +170,7 @@ private fun SendSmsSection(
         ?: "+14158904321"
 
     var selectedFrom by remember(defaultFrom) { mutableStateOf(defaultFrom) }
-    var toNumber by remember { mutableStateOf("+447700900412") }
+    var toNumber by remember { mutableStateOf("+923001234567") }
     var body by remember { mutableStateOf("Hello from PulseRelay! Your direct global route is live.") }
 
     val planTier = PlanTier.fromRaw(data.settings?.planTier)
@@ -382,15 +386,17 @@ private fun OtpVerifySection(
     lastOtpCheck: OtpCheckResult?,
     onSendOtp: (to: String, from: String, service: String, length: Int, channel: OtpChannel) -> Unit,
     onCheckOtp: (to: String, code: String) -> Unit,
+    onRevokeOtp: (OtpVerificationRecord) -> Unit,
     onClearOtpCheck: () -> Unit
 ) {
     val activeNumbers = data.phoneNumbers.filter { it.status == "ACTIVE" }
-    val defaultFrom = activeNumbers.firstOrNull { it.defaultSender }?.e164Number
+    val defaultFrom = activeNumbers.firstOrNull { it.countryCode == "PK" }?.e164Number
+        ?: activeNumbers.firstOrNull { it.defaultSender }?.e164Number
         ?: activeNumbers.firstOrNull()?.e164Number
         ?: "+14158904321"
 
     var serviceName by remember { mutableStateOf("PulseAuth Global") }
-    var otpRecipient by remember { mutableStateOf("+447700900412") }
+    var otpRecipient by remember { mutableStateOf("+923001234567") }
     var codeLength by remember { mutableIntStateOf(6) }
     var channel by remember { mutableStateOf(OtpChannel.SMS) }
     var verifyCodeInput by remember { mutableStateOf("") }
@@ -449,10 +455,23 @@ private fun OtpVerifySection(
                             .testTag("otp_service_input")
                     )
 
+                    Row(
+                        modifier = Modifier.horizontalScroll(rememberScrollState()),
+                        horizontalArrangement = Arrangement.spacedBy(6.dp)
+                    ) {
+                        globalQuickRecipients.forEach { (label, e164) ->
+                            FilterChip(
+                                selected = otpRecipient == e164,
+                                onClick = { otpRecipient = e164 },
+                                label = { Text(label, style = MaterialTheme.typography.labelSmall) }
+                            )
+                        }
+                    }
+
                     OutlinedTextField(
                         value = otpRecipient,
                         onValueChange = { otpRecipient = it },
-                        label = { Text("Recipient E.164 Number") },
+                        label = { Text("Recipient E.164 Number (+92, +1, +44...)") },
                         singleLine = true,
                         modifier = Modifier
                             .fillMaxWidth()
@@ -627,6 +646,7 @@ private fun OtpVerifySection(
                     otpRecipient = otp.toNumber
                     verifyCodeInput = otp.code
                 },
+                onRevokeOtp = { onRevokeOtp(otp) },
                 modifier = Modifier
                     .fillMaxWidth()
                     .widthIn(max = 880.dp)
@@ -640,6 +660,7 @@ private fun OtpChallengeCard(
     otp: OtpVerificationRecord,
     nowMillis: Long,
     onPrefillVerify: () -> Unit,
+    onRevokeOtp: () -> Unit,
     modifier: Modifier = Modifier
 ) {
     val status = OtpStatus.fromRaw(otp.status)
@@ -713,12 +734,21 @@ private fun OtpChallengeCard(
                 }
 
                 if (status == OtpStatus.PENDING) {
-                    OutlinedButton(
-                        onClick = onPrefillVerify,
-                        shape = RoundedCornerShape(10.dp),
-                        contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp)
-                    ) {
-                        Text("Fill & Test", style = MaterialTheme.typography.labelMedium)
+                    Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                        OutlinedButton(
+                            onClick = onPrefillVerify,
+                            shape = RoundedCornerShape(10.dp),
+                            contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp)
+                        ) {
+                            Text("Fill & Test", style = MaterialTheme.typography.labelMedium)
+                        }
+                        OutlinedButton(
+                            onClick = onRevokeOtp,
+                            shape = RoundedCornerShape(10.dp),
+                            contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp)
+                        ) {
+                            Text("Expire", color = PulseCrimson, style = MaterialTheme.typography.labelMedium)
+                        }
                     }
                 }
             }

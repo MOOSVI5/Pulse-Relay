@@ -51,9 +51,14 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.example.data.model.MessageStatus
+import com.example.data.model.OtpChannel
 import com.example.data.model.OtpStatus
+import com.example.data.model.OtpVerificationRecord
 import com.example.data.model.PlanTier
 import com.example.data.model.SmsMessageRecord
+import com.example.data.model.TeamProfileRecord
+import com.example.data.model.TeamRole
+import com.example.engine.OtpCheckResult
 import com.example.ui.components.KpiMetricTile
 import com.example.ui.components.StatusPill
 import com.example.ui.components.ThroughputSparklineCanvas
@@ -67,9 +72,23 @@ import com.example.ui.viewmodel.ConsoleDashboardData
 @Composable
 fun ConsoleOverviewScreen(
     data: ConsoleDashboardData,
+    activeProfile: TeamProfileRecord?,
+    otpServiceEnabled: Boolean,
     isServerRunning: Boolean,
     serverPort: Int,
+    isBusy: Boolean,
+    lastOtpCheck: OtpCheckResult?,
     onToggleServer: (Boolean) -> Unit,
+    onToggleOtpService: (Boolean) -> Unit,
+    onSendQuickOtp: (to: String, from: String, service: String, length: Int, channel: OtpChannel, ttlSeconds: Int) -> Unit,
+    onVerifyQuickOtp: (to: String, code: String) -> Unit,
+    onRevokeOtp: (OtpVerificationRecord) -> Unit,
+    onClearOtpCheck: () -> Unit,
+    onOpenProfileSwitcher: () -> Unit,
+    onSwitchToAdmin: () -> Unit,
+    onCreateTeamMember: (displayName: String, contactHandle: String, role: TeamRole, dailyLimit: Long) -> Unit,
+    onUpdateTeamMember: (profile: TeamProfileRecord, displayName: String, contactHandle: String, role: TeamRole, active: Boolean, dailyLimit: Long) -> Unit,
+    onDeleteTeamMember: (TeamProfileRecord) -> Unit,
     onNavigateToSendSms: () -> Unit,
     onNavigateToOtp: () -> Unit,
     onNavigateToNumbers: () -> Unit,
@@ -79,6 +98,8 @@ fun ConsoleOverviewScreen(
     val clipboard = LocalClipboardManager.current
     val settings = data.settings
     val planTier = PlanTier.fromRaw(settings?.planTier)
+    val activeRole = TeamRole.fromRaw(activeProfile?.role)
+    val profileActive = activeProfile?.active != false
     val deliveredCount = data.smsMessages.count { MessageStatus.fromRaw(it.status) == MessageStatus.DELIVERED }
     val deliveryRate = if (data.smsMessages.isEmpty()) 100 else ((deliveredCount * 100f) / data.smsMessages.size).toInt()
     val avgLatency = data.smsMessages.mapNotNull { it.latencyMs.takeIf { l -> l > 0 } }
@@ -99,6 +120,45 @@ fun ConsoleOverviewScreen(
         horizontalAlignment = Alignment.CenterHorizontally,
         verticalArrangement = Arrangement.spacedBy(14.dp)
     ) {
+        // Simple 1-Tap OTP SMS Sending Service & Full Control
+        item {
+            QuickOtpServiceCard(
+                data = data,
+                otpServiceEnabled = otpServiceEnabled,
+                canControlService = profileActive && activeRole.canControlService,
+                canSendOtp = profileActive && activeRole.canSendOtp,
+                serverPort = serverPort,
+                isBusy = isBusy,
+                lastOtpCheck = lastOtpCheck,
+                onToggleOtpService = onToggleOtpService,
+                onSendOtp = onSendQuickOtp,
+                onVerifyOtp = onVerifyQuickOtp,
+                onRevokeOtp = onRevokeOtp,
+                onClearOtpCheck = onClearOtpCheck,
+                onCopied = onCopied,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .widthIn(max = 880.dp)
+            )
+        }
+
+        // Workspace Profiles & Team Member Roles
+        item {
+            TeamWorkspaceControlCard(
+                profiles = data.teamProfiles,
+                activeProfile = activeProfile,
+                isBusy = isBusy,
+                onOpenSwitcher = onOpenProfileSwitcher,
+                onSwitchToAdmin = onSwitchToAdmin,
+                onCreateMember = onCreateTeamMember,
+                onUpdateMember = onUpdateTeamMember,
+                onDeleteMember = onDeleteTeamMember,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .widthIn(max = 880.dp)
+            )
+        }
+
         // Live API Engine & Account Header Card
         item {
             Surface(

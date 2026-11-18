@@ -204,6 +204,73 @@ data class GitHubIntegrationRecord(
     val updatedAt: Timestamp? = null
 )
 
+enum class TeamRole(
+    val label: String,
+    val summary: String,
+    val canSendOtp: Boolean,
+    val canSendSms: Boolean,
+    val canManageNumbersAndKeys: Boolean,
+    val canManageTeam: Boolean,
+    val canControlService: Boolean
+) {
+    ADMIN(
+        label = "Admin",
+        summary = "Full control: service toggle, roles, keys, numbers & OTP",
+        canSendOtp = true,
+        canSendSms = true,
+        canManageNumbersAndKeys = true,
+        canManageTeam = true,
+        canControlService = true
+    ),
+    OTP_OPERATOR(
+        label = "OTP Operator",
+        summary = "Send & verify OTP codes and view SMS logs",
+        canSendOtp = true,
+        canSendSms = true,
+        canManageNumbersAndKeys = false,
+        canManageTeam = false,
+        canControlService = false
+    ),
+    DEVELOPER(
+        label = "Developer",
+        summary = "Manage API keys, numbers, REST API & webhooks",
+        canSendOtp = true,
+        canSendSms = true,
+        canManageNumbersAndKeys = true,
+        canManageTeam = false,
+        canControlService = false
+    ),
+    VIEWER(
+        label = "Viewer",
+        summary = "Read-only access to metrics, OTP codes & logs",
+        canSendOtp = false,
+        canSendSms = false,
+        canManageNumbersAndKeys = false,
+        canManageTeam = false,
+        canControlService = false
+    );
+
+    companion object {
+        fun fromRaw(raw: String?): TeamRole =
+            entries.firstOrNull { it.name == raw } ?: ADMIN
+    }
+}
+
+@Keep
+@IgnoreExtraProperties
+data class TeamProfileRecord(
+    @DocumentId val id: String = "",
+    val userId: String = "",
+    val displayName: String = "Admin",
+    val contactHandle: String = "",
+    val role: String = TeamRole.ADMIN.name,
+    val ownerAdmin: Boolean = false,
+    val active: Boolean = true,
+    val dailyOtpLimit: Long = 1000L,
+    val createdAt: Timestamp? = null,
+    val updatedAt: Timestamp? = null
+)
+
 data class CountryCarrierInfo(
     val countryCode: String,
     val countryName: String,
@@ -229,16 +296,17 @@ data class ApiRequestLog(
 
 object GlobalCountryCatalog {
     val countries = listOf(
+        CountryCarrierInfo("PK", "Pakistan", "+92", "300", "Karachi / Lahore, PK", "Jazz / Zong PK Direct", 128, 0.0110),
         CountryCarrierInfo("US", "United States", "+1", "415", "San Francisco, CA", "T-Mobile US Direct", 92, 0.0075),
         CountryCarrierInfo("GB", "United Kingdom", "+44", "7700", "London, UK", "Vodafone UK Tier-1", 108, 0.0090),
         CountryCarrierInfo("CA", "Canada", "+1", "647", "Toronto, ON", "Rogers Wireless", 98, 0.0075),
+        CountryCarrierInfo("AE", "United Arab Emirates", "+971", "50", "Dubai, AE", "Etisalat Carrier", 148, 0.0150),
+        CountryCarrierInfo("IN", "India", "+91", "9820", "Mumbai, IN", "Jio DLT Direct", 142, 0.0065),
         CountryCarrierInfo("DE", "Germany", "+49", "30", "Berlin, DE", "Deutsche Telekom", 116, 0.0110),
         CountryCarrierInfo("FR", "France", "+33", "6", "Paris, FR", "Orange Telecom", 122, 0.0115),
         CountryCarrierInfo("JP", "Japan", "+81", "90", "Tokyo, JP", "NTT Docomo Direct", 134, 0.0140),
         CountryCarrierInfo("SG", "Singapore", "+65", "8123", "Singapore, SG", "Singtel Mobile", 112, 0.0105),
         CountryCarrierInfo("AU", "Australia", "+61", "412", "Sydney, NSW", "Telstra Direct", 129, 0.0120),
-        CountryCarrierInfo("IN", "India", "+91", "9820", "Mumbai, IN", "Jio DLT Direct", 142, 0.0065),
-        CountryCarrierInfo("AE", "United Arab Emirates", "+971", "50", "Dubai, AE", "Etisalat Carrier", 148, 0.0150),
         CountryCarrierInfo("BR", "Brazil", "+55", "11", "Sao Paulo, BR", "Vivo Direct", 156, 0.0130),
         CountryCarrierInfo("KR", "South Korea", "+82", "10", "Seoul, KR", "SK Telecom", 126, 0.0125),
         CountryCarrierInfo("NL", "Netherlands", "+31", "6", "Amsterdam, NL", "KPN Mobile", 114, 0.0105),

@@ -15,10 +15,13 @@ import com.example.data.model.MessageDirection
 import com.example.data.model.NumberStatus
 import com.example.data.model.NumberType
 import com.example.data.model.OtpChannel
+import com.example.data.model.OtpStatus
 import com.example.data.model.OtpVerificationRecord
 import com.example.data.model.PhoneNumberRecord
 import com.example.data.model.PlanTier
 import com.example.data.model.SmsMessageRecord
+import com.example.data.model.TeamProfileRecord
+import com.example.data.model.TeamRole
 import com.example.engine.GitHubApiClient
 import com.example.engine.GitHubReleaseInfo
 import com.example.engine.GitHubRepoSummary
@@ -57,7 +60,8 @@ data class ConsoleDashboardData(
     val phoneNumbers: List<PhoneNumberRecord>,
     val smsMessages: List<SmsMessageRecord>,
     val otpVerifications: List<OtpVerificationRecord>,
-    val githubIntegrations: List<GitHubIntegrationRecord> = emptyList()
+    val githubIntegrations: List<GitHubIntegrationRecord> = emptyList(),
+    val teamProfiles: List<TeamProfileRecord> = emptyList()
 )
 
 data class ApiExecutionResult(
@@ -106,6 +110,14 @@ class PulseConsoleViewModel(
     private val _latestRelease = MutableStateFlow<GitHubReleaseInfo?>(null)
     val latestRelease: StateFlow<GitHubReleaseInfo?> = _latestRelease.asStateFlow()
 
+    private val _activeProfileId = MutableStateFlow("profile_admin")
+    val activeProfileId: StateFlow<String> = _activeProfileId.asStateFlow()
+
+    private val _otpServiceEnabled = MutableStateFlow(true)
+    val otpServiceEnabled: StateFlow<Boolean> = _otpServiceEnabled.asStateFlow()
+
+    private val _latestProfilesSnapshot = MutableStateFlow<List<TeamProfileRecord>>(emptyList())
+
     val dashboardState: StateFlow<UiState<ConsoleDashboardData>> = combine(
         combine(
             repository.observeAccountSettings(currentUserId),
@@ -115,19 +127,36 @@ class PulseConsoleViewModel(
         combine(
             repository.observeSmsMessages(currentUserId),
             repository.observeOtpVerifications(currentUserId),
-            repository.observeGitHubIntegrations(currentUserId)
-        ) { messages, otps, gh -> Triple(messages, otps, gh) }
+            repository.observeGitHubIntegrations(currentUserId),
+            repository.observeTeamProfiles(currentUserId)
+        ) { messages, otps, gh, profiles ->
+            listOf(messages, otps, gh, profiles)
+        }
     ) { left, right ->
+        @Suppress("UNCHECKED_CAST")
+        val messages = right[0] as List<SmsMessageRecord>
+        @Suppress("UNCHECKED_CAST")
+        val otps = right[1] as List<OtpVerificationRecord>
+        @Suppress("UNCHECKED_CAST")
+        val gh = right[2] as List<GitHubIntegrationRecord>
+        @Suppress("UNCHECKED_CAST")
+        val profiles = right[3] as List<TeamProfileRecord>
         ConsoleDashboardData(
             settings = left.first,
             apiKeys = left.second,
             phoneNumbers = left.third,
-            smsMessages = right.first,
-            otpVerifications = right.second,
-            githubIntegrations = right.third
+            smsMessages = messages,
+            otpVerifications = otps,
+            githubIntegrations = gh,
+            teamProfiles = profiles
         )
     }
         .onEach { data ->
+            _latestProfilesSnapshot.value = data.teamProfiles
+            if (data.teamProfiles.isNotEmpty() && data.teamProfiles.none { it.id == _activeProfileId.value }) {
+                _activeProfileId.value = data.teamProfiles.firstOrNull { it.ownerAdmin }?.id
+                    ?: data.teamProfiles.first().id
+            }
             apiServer.syncSnapshot(
                 settings = data.settings,
                 keys = data.apiKeys,
@@ -145,9 +174,7 @@ class PulseConsoleViewModel(
             Log.w(TAG, "Error observing console data", rootError)
             emitErrorState(rootError.message ?: "Failed to load PulseRelay console")
         }
-        .let { flow ->
-            flow
-        }.let { combined ->
+        .let { combined ->
             combine(
                 combined,
                 MutableStateFlow(Unit)
@@ -191,7 +218,122 @@ class PulseConsoleViewModel(
         _lastOtpCheck.value = null
     }
 
+    private fun activeProfile(): TeamProfileRecord? {
+        val list = _latestProfilesSnapshot.value
+        return list.firstOrNull { it.id == _activeProfileId.value }
+            ?: list.firstOrNull { it.ownerAdmin }
+            ?: list.firstOrNull()
+    }
+
+    private fun requireActivePermission(
+        actionLabel: String,
+        predicate: (TeamRole) -> Boolean
+    ): Boolean {
+        val profile = activeProfile() ?: return true
+        if (!profile.active) {
+            _toastMessage.value = "Profile '${profile.displayName}' is paused. Switch back to Admin for full control."
+            return false
+        }
+        val role = TeamRole.fromRaw(profile.role)
+        if (!predicate(role)) {
+            _toastMessage.value = "${role.label} profile cannot $actionLabel. Switch to Admin."
+            return false
+        }
+        return true
+    }
+
+    fun switchActiveProfile(profile: TeamProfileRecord) {
+        _activeProfileId.value = profile.id
+        val role = TeamRole.fromRaw(profile.role)
+        _toastMessage.value = if (profile.active) {
+            "Switched profile to ${profile.displayName} (${role.label})"
+        } else {
+            "Switched to ${profile.displayName} (PAUSED · read-only)"
+        }
+    }
+
+    fun toggleOtpService(enabled: Boolean) {
+        if (!requireActivePermission("pause or resume the OTP service") { it.canControlService }) return
+        _otpServiceEnabled.value = enabled
+        _toastMessage.value = if (enabled) {
+            "OTP SMS Sending Service is LIVE"
+        } else {
+            "OTP SMS Sending Service PAUSED by Admin"
+        }
+    }
+
+    fun createTeamMember(
+        displayName: String,
+        contactHandle: String,
+        role: TeamRole,
+        dailyOtpLimit: Long
+    ) {
+        if (!requireActivePermission("add team members") { it.canManageTeam }) return
+        viewModelScope.launch {
+            _isBusy.value = true
+            val res = repository.createTeamProfile(displayName, contactHandle, role, dailyOtpLimit)
+            _isBusy.value = false
+            _toastMessage.value = if (res.isSuccess) {
+                "Added ${res.getOrThrow().displayName} as ${role.label}"
+            } else {
+                res.exceptionOrNull()?.message ?: "Failed to add team member"
+            }
+        }
+    }
+
+    fun updateTeamMember(
+        profile: TeamProfileRecord,
+        displayName: String,
+        contactHandle: String,
+        role: TeamRole,
+        active: Boolean,
+        dailyOtpLimit: Long
+    ) {
+        if (!requireActivePermission("update team roles") { it.canManageTeam }) return
+        if (profile.ownerAdmin && (role != TeamRole.ADMIN || !active)) {
+            _toastMessage.value = "Owner Admin must stay ADMIN and active"
+            return
+        }
+        viewModelScope.launch {
+            _isBusy.value = true
+            val res = repository.updateTeamProfile(
+                profileId = profile.id,
+                displayName = displayName,
+                contactHandle = contactHandle,
+                role = role,
+                active = active,
+                dailyOtpLimit = dailyOtpLimit
+            )
+            _isBusy.value = false
+            _toastMessage.value = if (res.isSuccess) {
+                "Updated ${displayName} (${role.label})"
+            } else {
+                res.exceptionOrNull()?.message ?: "Failed to update team member"
+            }
+        }
+    }
+
+    fun deleteTeamMember(profile: TeamProfileRecord) {
+        if (!requireActivePermission("remove team members") { it.canManageTeam }) return
+        if (profile.ownerAdmin) {
+            _toastMessage.value = "Cannot remove Owner Admin profile"
+            return
+        }
+        viewModelScope.launch {
+            val res = repository.deleteTeamProfile(profile.id)
+            if (res.isSuccess) {
+                if (_activeProfileId.value == profile.id) {
+                    _activeProfileId.value = "profile_admin"
+                }
+                _toastMessage.value = "Removed ${profile.displayName}"
+            } else {
+                _toastMessage.value = res.exceptionOrNull()?.message ?: "Failed to remove team member"
+            }
+        }
+    }
+
     fun toggleApiServer(start: Boolean) {
+        if (!requireActivePermission("control the REST API engine") { it.canControlService }) return
         if (start) {
             apiServer.start(8765)
             _toastMessage.value = "Local REST API Server listening on http://127.0.0.1:8765"
@@ -207,6 +349,7 @@ class PulseConsoleViewModel(
         body: String,
         data: ConsoleDashboardData
     ) {
+        if (!requireActivePermission("send SMS messages") { it.canSendSms }) return
         viewModelScope.launch {
             _isBusy.value = true
             val res = sendingEngine.sendSms(
@@ -233,8 +376,14 @@ class PulseConsoleViewModel(
         serviceName: String,
         codeLength: Int,
         channel: OtpChannel,
-        data: ConsoleDashboardData
+        data: ConsoleDashboardData,
+        ttlSeconds: Int = 300
     ) {
+        if (!requireActivePermission("dispatch OTP codes") { it.canSendOtp }) return
+        if (!_otpServiceEnabled.value) {
+            _toastMessage.value = "OTP Service is PAUSED. Turn it LIVE in Admin control first."
+            return
+        }
         viewModelScope.launch {
             _isBusy.value = true
             val res = sendingEngine.sendOtpVerification(
@@ -243,18 +392,30 @@ class PulseConsoleViewModel(
                 serviceName = serviceName,
                 codeLength = codeLength,
                 channel = channel,
-                ttlSeconds = 300,
+                ttlSeconds = ttlSeconds,
                 direction = MessageDirection.OUTBOUND_CONSOLE,
-                apiKeyLabel = "Verify Console",
+                apiKeyLabel = activeProfile()?.displayName ?: "Verify Console",
                 settings = data.settings,
                 ownedNumbers = data.phoneNumbers
             )
             _isBusy.value = false
             _toastMessage.value = if (res.isSuccess) {
                 val otp = res.getOrThrow()
-                "OTP ${otp.code} dispatched to ${otp.toNumber}"
+                "OTP ${otp.code} sent to ${otp.toNumber}"
             } else {
                 res.exceptionOrNull()?.message ?: "Failed to dispatch OTP"
+            }
+        }
+    }
+
+    fun revokeOtpChallenge(otp: OtpVerificationRecord) {
+        if (!requireActivePermission("revoke pending OTP codes") { it.canSendOtp }) return
+        viewModelScope.launch {
+            val res = repository.updateOtpStatus(otp.id, OtpStatus.EXPIRED, otp.attempts)
+            _toastMessage.value = if (res.isSuccess) {
+                "Expired OTP ${otp.sid}"
+            } else {
+                res.exceptionOrNull()?.message ?: "Failed to expire OTP"
             }
         }
     }
@@ -279,6 +440,7 @@ class PulseConsoleViewModel(
     }
 
     fun createApiKey(label: String, environment: KeyEnvironment, scopes: String) {
+        if (!requireActivePermission("create API keys") { it.canManageNumbersAndKeys }) return
         viewModelScope.launch {
             _isBusy.value = true
             val res = repository.createApiKey(label, environment, scopes)
@@ -292,6 +454,7 @@ class PulseConsoleViewModel(
     }
 
     fun toggleApiKey(keyId: String, active: Boolean) {
+        if (!requireActivePermission("modify API keys") { it.canManageNumbersAndKeys }) return
         viewModelScope.launch {
             val res = repository.toggleApiKeyActive(keyId, active)
             if (res.isFailure) {
@@ -301,6 +464,7 @@ class PulseConsoleViewModel(
     }
 
     fun deleteApiKey(keyId: String) {
+        if (!requireActivePermission("delete API keys") { it.canManageNumbersAndKeys }) return
         viewModelScope.launch {
             val res = repository.deleteApiKey(keyId)
             _toastMessage.value = if (res.isSuccess) "API key deleted" else "Failed to delete API key"
@@ -313,6 +477,7 @@ class PulseConsoleViewModel(
         customAlphaId: String,
         planTier: PlanTier
     ) {
+        if (!requireActivePermission("provision phone numbers") { it.canManageNumbersAndKeys }) return
         viewModelScope.launch {
             _isBusy.value = true
             val generatedNumber = when (numberType) {
@@ -351,6 +516,7 @@ class PulseConsoleViewModel(
         setAsDefault: Boolean,
         allNumbers: List<PhoneNumberRecord>
     ) {
+        if (!requireActivePermission("configure phone numbers") { it.canManageNumbersAndKeys }) return
         viewModelScope.launch {
             _isBusy.value = true
             val res = repository.updatePhoneNumber(
@@ -370,6 +536,7 @@ class PulseConsoleViewModel(
     }
 
     fun releaseNumber(numberId: String) {
+        if (!requireActivePermission("release phone numbers") { it.canManageNumbersAndKeys }) return
         viewModelScope.launch {
             val res = repository.releasePhoneNumber(numberId)
             _toastMessage.value = if (res.isSuccess) "Number released" else "Failed to release number"
@@ -377,6 +544,7 @@ class PulseConsoleViewModel(
     }
 
     fun updateAccountSettings(planTier: PlanTier, directRouting: Boolean, webhookUrl: String) {
+        if (!requireActivePermission("update plan & routing") { it.canControlService }) return
         viewModelScope.launch {
             _isBusy.value = true
             val res = repository.updateAccountPlan(planTier, directRouting, webhookUrl)

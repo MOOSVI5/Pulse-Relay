@@ -24,6 +24,7 @@ import androidx.compose.material.icons.rounded.Dashboard
 import androidx.compose.material.icons.rounded.Key
 import androidx.compose.material.icons.rounded.LightMode
 import androidx.compose.material.icons.rounded.Public
+import androidx.compose.material.icons.rounded.SwapHoriz
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
@@ -36,6 +37,7 @@ import androidx.compose.material3.NavigationRailItem
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
@@ -52,11 +54,13 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.credentials.CredentialManager
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.example.data.firebase.signOutUser
+import com.example.data.model.TeamRole
 import com.example.ui.components.PulseBrandMark
 import com.example.ui.theme.PulseCrimson
 import com.example.ui.theme.SignalEmerald
@@ -96,10 +100,19 @@ fun ConsoleScaffold(
     val firebaseLatencyMs by viewModel.firebaseLatencyMs.collectAsStateWithLifecycle()
     val fetchedRepos by viewModel.fetchedGitHubRepos.collectAsStateWithLifecycle()
     val latestRelease by viewModel.latestRelease.collectAsStateWithLifecycle()
+    val activeProfileId by viewModel.activeProfileId.collectAsStateWithLifecycle()
+    val otpServiceEnabled by viewModel.otpServiceEnabled.collectAsStateWithLifecycle()
 
     var activeTab by remember { mutableStateOf(ConsoleTab.OVERVIEW) }
     var messagingSubTab by remember { mutableStateOf(MessagingSubTab.SEND_SMS) }
+    var showProfileSwitcher by remember { mutableStateOf(false) }
     val snackbarHostState = remember { SnackbarHostState() }
+
+    val loadedData = (dashboardState as? UiState.Success)?.data
+    val activeProfile = loadedData?.teamProfiles?.firstOrNull { it.id == activeProfileId }
+        ?: loadedData?.teamProfiles?.firstOrNull { it.ownerAdmin }
+        ?: loadedData?.teamProfiles?.firstOrNull()
+    val activeRole = TeamRole.fromRaw(activeProfile?.role)
 
     LaunchedEffect(toastMessage) {
         val msg = toastMessage
@@ -133,18 +146,52 @@ fun ConsoleScaffold(
                             Spacer(Modifier.width(10.dp))
                             Column {
                                 Text(
-                                    text = "PulseRelay Console",
-                                    style = MaterialTheme.typography.titleMedium
+                                    text = "PulseRelay",
+                                    style = MaterialTheme.typography.titleMedium,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis
                                 )
                                 Text(
-                                    text = userEmail ?: "Developer Workspace",
+                                    text = "${activeProfile?.displayName ?: "Admin"} · ${activeRole.label.uppercase()}",
                                     style = MaterialTheme.typography.labelSmall.copy(fontSize = 10.sp),
-                                    color = if (isServerRunning) SignalEmerald else TelemetryCyan
+                                    color = if (activeRole == TeamRole.ADMIN) SignalEmerald else TelemetryCyan,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis
                                 )
                             }
                         }
                     },
                     actions = {
+                        if (loadedData != null && loadedData.teamProfiles.isNotEmpty()) {
+                            Surface(
+                                onClick = { showProfileSwitcher = true },
+                                shape = androidx.compose.foundation.shape.RoundedCornerShape(10.dp),
+                                color = TelemetryCyan.copy(alpha = 0.14f),
+                                modifier = Modifier
+                                    .padding(end = 2.dp)
+                                    .testTag("topbar_profile_switcher")
+                            ) {
+                                Row(
+                                    modifier = Modifier.padding(horizontal = 8.dp, vertical = 6.dp),
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Rounded.SwapHoriz,
+                                        contentDescription = "Switch profile",
+                                        tint = TelemetryCyan,
+                                        modifier = Modifier.size(16.dp)
+                                    )
+                                    Spacer(Modifier.width(3.dp))
+                                    Text(
+                                        text = activeProfile?.displayName ?: "Admin",
+                                        style = MaterialTheme.typography.labelSmall,
+                                        color = TelemetryCyan,
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis
+                                    )
+                                }
+                            }
+                        }
                         TextButton(
                             onClick = onShowPublicSite,
                             modifier = Modifier.testTag("console_public_site_button")
@@ -270,9 +317,37 @@ fun ConsoleScaffold(
                             when (activeTab) {
                                 ConsoleTab.OVERVIEW -> ConsoleOverviewScreen(
                                     data = data,
+                                    activeProfile = activeProfile,
+                                    otpServiceEnabled = otpServiceEnabled,
                                     isServerRunning = isServerRunning,
                                     serverPort = serverPort,
+                                    isBusy = isBusy,
+                                    lastOtpCheck = lastOtpCheck,
                                     onToggleServer = { viewModel.toggleApiServer(it) },
+                                    onToggleOtpService = { viewModel.toggleOtpService(it) },
+                                    onSendQuickOtp = { to, from, svc, len, ch, ttl ->
+                                        viewModel.sendOtpFromConsole(to, from, svc, len, ch, data, ttl)
+                                    },
+                                    onVerifyQuickOtp = { to, code ->
+                                        viewModel.verifyOtpFromConsole(to, code, data)
+                                    },
+                                    onRevokeOtp = { otp -> viewModel.revokeOtpChallenge(otp) },
+                                    onClearOtpCheck = { viewModel.clearOtpCheck() },
+                                    onOpenProfileSwitcher = { showProfileSwitcher = true },
+                                    onSwitchToAdmin = {
+                                        data.teamProfiles.firstOrNull { it.ownerAdmin }?.let {
+                                            viewModel.switchActiveProfile(it)
+                                        }
+                                    },
+                                    onCreateTeamMember = { name, contact, role, limit ->
+                                        viewModel.createTeamMember(name, contact, role, limit)
+                                    },
+                                    onUpdateTeamMember = { profile, name, contact, role, active, limit ->
+                                        viewModel.updateTeamMember(profile, name, contact, role, active, limit)
+                                    },
+                                    onDeleteTeamMember = { profile ->
+                                        viewModel.deleteTeamMember(profile)
+                                    },
                                     onNavigateToSendSms = {
                                         messagingSubTab = MessagingSubTab.SEND_SMS
                                         activeTab = ConsoleTab.MESSAGING
@@ -301,6 +376,9 @@ fun ConsoleScaffold(
                                     },
                                     onCheckOtp = { to, code ->
                                         viewModel.verifyOtpFromConsole(to, code, data)
+                                    },
+                                    onRevokeOtp = { otp ->
+                                        viewModel.revokeOtpChallenge(otp)
                                     },
                                     onClearOtpCheck = { viewModel.clearOtpCheck() }
                                 )
@@ -371,6 +449,15 @@ fun ConsoleScaffold(
                     }
                 }
             }
+        }
+
+        if (showProfileSwitcher && loadedData != null) {
+            ProfileSwitcherDialog(
+                profiles = loadedData.teamProfiles,
+                activeProfileId = activeProfile?.id ?: activeProfileId,
+                onSelectProfile = { profile -> viewModel.switchActiveProfile(profile) },
+                onDismiss = { showProfileSwitcher = false }
+            )
         }
     }
 }
