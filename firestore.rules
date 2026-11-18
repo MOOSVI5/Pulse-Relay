@@ -1,0 +1,317 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // Global safety net
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isOwner(userId) {
+      return isSignedIn() && request.auth.uid == userId;
+    }
+
+    function isValidId(id) {
+      return id is string && id.size() >= 1 && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function incoming() {
+      return request.resource.data;
+    }
+
+    function existing() {
+      return resource.data;
+    }
+
+    function isValidAccountSettings(data) {
+      return data.userId is string && data.userId.size() >= 1 && data.userId.size() <= 128 &&
+             data.accountSid is string && data.accountSid.size() >= 4 && data.accountSid.size() <= 64 &&
+             data.planTier in ['UNLIMITED_DIRECT', 'PAY_AS_YOU_GO'] &&
+             data.unlimitedTexts is bool &&
+             data.directRouting is bool &&
+             data.apiServerPort is int && data.apiServerPort >= 1024 && data.apiServerPort <= 65535 &&
+             data.defaultWebhookUrl is string && data.defaultWebhookUrl.size() <= 500 &&
+             data.totalMessagesSent is int && data.totalMessagesSent >= 0 &&
+             data.totalOtpVerified is int && data.totalOtpVerified >= 0 &&
+             data.createdAt is timestamp && data.createdAt <= request.time &&
+             data.updatedAt is timestamp && data.updatedAt <= request.time;
+    }
+
+    function isValidApiKey(data) {
+      return data.userId is string && data.userId.size() >= 1 && data.userId.size() <= 128 &&
+             data.label is string && data.label.size() >= 1 && data.label.size() <= 80 &&
+             data.secretKey is string && data.secretKey.size() >= 12 && data.secretKey.size() <= 120 &&
+             data.environment in ['LIVE', 'TEST'] &&
+             data.scopes is string && data.scopes.size() >= 1 && data.scopes.size() <= 120 &&
+             data.active is bool &&
+             data.requestsCount is int && data.requestsCount >= 0 &&
+             data.createdAt is timestamp && data.createdAt <= request.time &&
+             data.updatedAt is timestamp && data.updatedAt <= request.time;
+    }
+
+    function isValidPhoneNumber(data) {
+      return data.userId is string && data.userId.size() >= 1 && data.userId.size() <= 128 &&
+             data.e164Number is string && data.e164Number.size() >= 2 && data.e164Number.size() <= 24 &&
+             data.countryCode is string && data.countryCode.size() >= 2 && data.countryCode.size() <= 4 &&
+             data.countryName is string && data.countryName.size() >= 1 && data.countryName.size() <= 60 &&
+             data.regionLabel is string && data.regionLabel.size() >= 1 && data.regionLabel.size() <= 80 &&
+             data.numberType in ['LOCAL', 'TOLL_FREE', 'SHORT_CODE', 'ALPHANUMERIC'] &&
+             data.capabilities is string && data.capabilities.size() >= 1 && data.capabilities.size() <= 60 &&
+             data.monthlyPriceUsd is number && data.monthlyPriceUsd >= 0 &&
+             data.webhookUrl is string && data.webhookUrl.size() <= 500 &&
+             data.defaultSender is bool &&
+             data.status in ['ACTIVE', 'PAUSED'] &&
+             data.createdAt is timestamp && data.createdAt <= request.time &&
+             data.updatedAt is timestamp && data.updatedAt <= request.time;
+    }
+
+    function isValidSmsMessage(data) {
+      return data.userId is string && data.userId.size() >= 1 && data.userId.size() <= 128 &&
+             data.sid is string && data.sid.size() >= 4 && data.sid.size() <= 48 &&
+             data.direction in ['OUTBOUND_API', 'OUTBOUND_CONSOLE', 'INBOUND'] &&
+             data.fromNumber is string && data.fromNumber.size() >= 2 && data.fromNumber.size() <= 24 &&
+             data.toNumber is string && data.toNumber.size() >= 4 && data.toNumber.size() <= 24 &&
+             data.countryCode is string && data.countryCode.size() >= 2 && data.countryCode.size() <= 4 &&
+             data.carrierName is string && data.carrierName.size() >= 1 && data.carrierName.size() <= 60 &&
+             data.body is string && data.body.size() >= 1 && data.body.size() <= 1600 &&
+             data.segments is int && data.segments >= 1 && data.segments <= 20 &&
+             data.status in ['QUEUED', 'SENDING', 'SENT', 'DELIVERED', 'FAILED'] &&
+             data.latencyMs is int && data.latencyMs >= 0 && data.latencyMs <= 60000 &&
+             data.priceUsd is number && data.priceUsd >= 0 &&
+             data.apiKeyLabel is string && data.apiKeyLabel.size() >= 1 && data.apiKeyLabel.size() <= 80 &&
+             data.webhookStatus is string && data.webhookStatus.size() >= 1 && data.webhookStatus.size() <= 120 &&
+             (!('errorMessage' in data) || (data.errorMessage is string && data.errorMessage.size() <= 300)) &&
+             data.createdAt is timestamp && data.createdAt <= request.time &&
+             data.updatedAt is timestamp && data.updatedAt <= request.time;
+    }
+
+    function isValidOtpVerification(data) {
+      return data.userId is string && data.userId.size() >= 1 && data.userId.size() <= 128 &&
+             data.sid is string && data.sid.size() >= 4 && data.sid.size() <= 48 &&
+             data.serviceName is string && data.serviceName.size() >= 1 && data.serviceName.size() <= 80 &&
+             data.toNumber is string && data.toNumber.size() >= 4 && data.toNumber.size() <= 24 &&
+             data.fromNumber is string && data.fromNumber.size() >= 2 && data.fromNumber.size() <= 24 &&
+             data.code is string && data.code.size() >= 4 && data.code.size() <= 10 &&
+             data.channel in ['SMS', 'FLASH_SMS'] &&
+             data.status in ['PENDING', 'APPROVED', 'EXPIRED', 'MAX_ATTEMPTS'] &&
+             data.attempts is int && data.attempts >= 0 && data.attempts <= 20 &&
+             data.maxAttempts is int && data.maxAttempts >= 1 && data.maxAttempts <= 10 &&
+             data.expiresAtMillis is int && data.expiresAtMillis > 0 &&
+             (!('verifiedAtMillis' in data) || data.verifiedAtMillis is int) &&
+             data.createdAt is timestamp && data.createdAt <= request.time &&
+             data.updatedAt is timestamp && data.updatedAt <= request.time;
+    }
+
+    function isValidGitHubIntegration(data) {
+      return data.userId is string && data.userId.size() >= 1 && data.userId.size() <= 128 &&
+             data.githubUsername is string && data.githubUsername.size() >= 1 && data.githubUsername.size() <= 64 &&
+             data.repoFullName is string && data.repoFullName.size() >= 3 && data.repoFullName.size() <= 140 &&
+             data.notifyToNumber is string && data.notifyToNumber.size() >= 4 && data.notifyToNumber.size() <= 24 &&
+             data.triggerMode in ['COMMIT_SMS', 'DEPLOY_OTP', 'RELEASE_ALERT'] &&
+             data.lastCommitSha is string && data.lastCommitSha.size() <= 64 &&
+             data.lastCommitMessage is string && data.lastCommitMessage.size() <= 300 &&
+             data.active is bool &&
+             data.createdAt is timestamp && data.createdAt <= request.time &&
+             data.updatedAt is timestamp && data.updatedAt <= request.time;
+    }
+
+    match /users/{userId} {
+      allow get: if isOwner(userId) && isValidId(userId);
+      allow list: if isOwner(userId);
+
+      allow create: if isOwner(userId) &&
+                       isValidId(userId) &&
+                       incoming().userId == request.auth.uid &&
+                       incoming().keys().hasAll([
+                         'userId', 'accountSid', 'planTier', 'unlimitedTexts', 'directRouting',
+                         'apiServerPort', 'defaultWebhookUrl', 'totalMessagesSent', 'totalOtpVerified',
+                         'createdAt', 'updatedAt'
+                       ]) &&
+                       incoming().keys().hasOnly([
+                         'userId', 'accountSid', 'planTier', 'unlimitedTexts', 'directRouting',
+                         'apiServerPort', 'defaultWebhookUrl', 'totalMessagesSent', 'totalOtpVerified',
+                         'createdAt', 'updatedAt'
+                       ]) &&
+                       isValidAccountSettings(incoming());
+
+      allow update: if isOwner(userId) &&
+                       isValidId(userId) &&
+                       incoming().userId == existing().userId &&
+                       incoming().accountSid == existing().accountSid &&
+                       incoming().createdAt == existing().createdAt &&
+                       isValidAccountSettings(incoming()) &&
+                       incoming().diff(existing()).affectedKeys().hasOnly([
+                         'planTier', 'unlimitedTexts', 'directRouting', 'apiServerPort',
+                         'defaultWebhookUrl', 'totalMessagesSent', 'totalOtpVerified', 'updatedAt'
+                       ]);
+
+      allow delete: if false;
+
+      match /api_keys/{keyId} {
+        allow get: if isOwner(userId) && isValidId(keyId);
+        allow list: if isOwner(userId);
+
+        allow create: if isOwner(userId) &&
+                         isValidId(keyId) &&
+                         incoming().userId == request.auth.uid &&
+                         incoming().keys().hasAll([
+                           'userId', 'label', 'secretKey', 'environment', 'scopes',
+                           'active', 'requestsCount', 'createdAt', 'updatedAt'
+                         ]) &&
+                         incoming().keys().hasOnly([
+                           'userId', 'label', 'secretKey', 'environment', 'scopes',
+                           'active', 'requestsCount', 'createdAt', 'updatedAt'
+                         ]) &&
+                         isValidApiKey(incoming());
+
+        allow update: if isOwner(userId) &&
+                         isValidId(keyId) &&
+                         incoming().userId == existing().userId &&
+                         incoming().createdAt == existing().createdAt &&
+                         isValidApiKey(incoming()) &&
+                         incoming().diff(existing()).affectedKeys().hasOnly([
+                           'label', 'secretKey', 'active', 'requestsCount', 'updatedAt'
+                         ]);
+
+        allow delete: if isOwner(userId) && isValidId(keyId);
+      }
+
+      match /phone_numbers/{numberId} {
+        allow get: if isOwner(userId) && isValidId(numberId);
+        allow list: if isOwner(userId);
+
+        allow create: if isOwner(userId) &&
+                         isValidId(numberId) &&
+                         incoming().userId == request.auth.uid &&
+                         incoming().keys().hasAll([
+                           'userId', 'e164Number', 'countryCode', 'countryName', 'regionLabel',
+                           'numberType', 'capabilities', 'monthlyPriceUsd', 'webhookUrl',
+                           'defaultSender', 'status', 'createdAt', 'updatedAt'
+                         ]) &&
+                         incoming().keys().hasOnly([
+                           'userId', 'e164Number', 'countryCode', 'countryName', 'regionLabel',
+                           'numberType', 'capabilities', 'monthlyPriceUsd', 'webhookUrl',
+                           'defaultSender', 'status', 'createdAt', 'updatedAt'
+                         ]) &&
+                         isValidPhoneNumber(incoming());
+
+        allow update: if isOwner(userId) &&
+                         isValidId(numberId) &&
+                         incoming().userId == existing().userId &&
+                         incoming().e164Number == existing().e164Number &&
+                         incoming().createdAt == existing().createdAt &&
+                         isValidPhoneNumber(incoming()) &&
+                         incoming().diff(existing()).affectedKeys().hasOnly([
+                           'webhookUrl', 'defaultSender', 'status', 'updatedAt'
+                         ]);
+
+        allow delete: if isOwner(userId) && isValidId(numberId);
+      }
+
+      match /sms_messages/{messageId} {
+        allow get: if isOwner(userId) && isValidId(messageId);
+        allow list: if isOwner(userId);
+
+        allow create: if isOwner(userId) &&
+                         isValidId(messageId) &&
+                         incoming().userId == request.auth.uid &&
+                         incoming().keys().hasAll([
+                           'userId', 'sid', 'direction', 'fromNumber', 'toNumber',
+                           'countryCode', 'carrierName', 'body', 'segments', 'status',
+                           'latencyMs', 'priceUsd', 'apiKeyLabel', 'webhookStatus',
+                           'createdAt', 'updatedAt'
+                         ]) &&
+                         incoming().keys().hasOnly([
+                           'userId', 'sid', 'direction', 'fromNumber', 'toNumber',
+                           'countryCode', 'carrierName', 'body', 'segments', 'status',
+                           'latencyMs', 'priceUsd', 'apiKeyLabel', 'webhookStatus',
+                           'errorMessage', 'createdAt', 'updatedAt'
+                         ]) &&
+                         isValidSmsMessage(incoming());
+
+        allow update: if isOwner(userId) &&
+                         isValidId(messageId) &&
+                         incoming().userId == existing().userId &&
+                         incoming().sid == existing().sid &&
+                         incoming().createdAt == existing().createdAt &&
+                         isValidSmsMessage(incoming()) &&
+                         incoming().diff(existing()).affectedKeys().hasOnly([
+                           'status', 'latencyMs', 'webhookStatus', 'errorMessage', 'updatedAt'
+                         ]);
+
+        allow delete: if isOwner(userId) && isValidId(messageId);
+      }
+
+      match /otp_verifications/{otpId} {
+        allow get: if isOwner(userId) && isValidId(otpId);
+        allow list: if isOwner(userId);
+
+        allow create: if isOwner(userId) &&
+                         isValidId(otpId) &&
+                         incoming().userId == request.auth.uid &&
+                         incoming().keys().hasAll([
+                           'userId', 'sid', 'serviceName', 'toNumber', 'fromNumber',
+                           'code', 'channel', 'status', 'attempts', 'maxAttempts',
+                           'expiresAtMillis', 'createdAt', 'updatedAt'
+                         ]) &&
+                         incoming().keys().hasOnly([
+                           'userId', 'sid', 'serviceName', 'toNumber', 'fromNumber',
+                           'code', 'channel', 'status', 'attempts', 'maxAttempts',
+                           'expiresAtMillis', 'verifiedAtMillis', 'createdAt', 'updatedAt'
+                         ]) &&
+                         isValidOtpVerification(incoming());
+
+        allow update: if isOwner(userId) &&
+                         isValidId(otpId) &&
+                         incoming().userId == existing().userId &&
+                         incoming().sid == existing().sid &&
+                         incoming().code == existing().code &&
+                         incoming().createdAt == existing().createdAt &&
+                         existing().status == 'PENDING' &&
+                         isValidOtpVerification(incoming()) &&
+                         incoming().diff(existing()).affectedKeys().hasOnly([
+                           'status', 'attempts', 'verifiedAtMillis', 'updatedAt'
+                         ]);
+
+        allow delete: if isOwner(userId) && isValidId(otpId);
+      }
+
+      match /github_integrations/{integrationId} {
+        allow get: if isOwner(userId) && isValidId(integrationId);
+        allow list: if isOwner(userId);
+
+        allow create: if isOwner(userId) &&
+                         isValidId(integrationId) &&
+                         incoming().userId == request.auth.uid &&
+                         incoming().keys().hasAll([
+                           'userId', 'githubUsername', 'repoFullName', 'notifyToNumber',
+                           'triggerMode', 'lastCommitSha', 'lastCommitMessage', 'active',
+                           'createdAt', 'updatedAt'
+                         ]) &&
+                         incoming().keys().hasOnly([
+                           'userId', 'githubUsername', 'repoFullName', 'notifyToNumber',
+                           'triggerMode', 'lastCommitSha', 'lastCommitMessage', 'active',
+                           'createdAt', 'updatedAt'
+                         ]) &&
+                         isValidGitHubIntegration(incoming());
+
+        allow update: if isOwner(userId) &&
+                         isValidId(integrationId) &&
+                         incoming().userId == existing().userId &&
+                         incoming().githubUsername == existing().githubUsername &&
+                         incoming().repoFullName == existing().repoFullName &&
+                         incoming().createdAt == existing().createdAt &&
+                         isValidGitHubIntegration(incoming()) &&
+                         incoming().diff(existing()).affectedKeys().hasOnly([
+                           'notifyToNumber', 'triggerMode', 'lastCommitSha',
+                           'lastCommitMessage', 'active', 'updatedAt'
+                         ]);
+
+        allow delete: if isOwner(userId) && isValidId(integrationId);
+      }
+    }
+  }
+}

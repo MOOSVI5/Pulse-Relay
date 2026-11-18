@@ -1,0 +1,152 @@
+{
+  "entities": {
+    "AccountSettings": {
+      "title": "AccountSettings",
+      "description": "User workspace configuration, plan tier, and aggregated usage counters for PulseRelay.",
+      "type": "object",
+      "properties": {
+        "userId": { "type": "string", "description": "Owner Firebase Auth UID." },
+        "accountSid": { "type": "string", "description": "Account SID identifier (AC...)." },
+        "planTier": { "type": "string", "enum": ["UNLIMITED_DIRECT", "PAY_AS_YOU_GO"] },
+        "unlimitedTexts": { "type": "boolean" },
+        "directRouting": { "type": "boolean" },
+        "apiServerPort": { "type": "integer" },
+        "defaultWebhookUrl": { "type": "string" },
+        "totalMessagesSent": { "type": "integer" },
+        "totalOtpVerified": { "type": "integer" },
+        "createdAt": { "type": "string", "format": "date-time", "description": "Client must write FieldValue.serverTimestamp()." },
+        "updatedAt": { "type": "string", "format": "date-time", "description": "Client must write FieldValue.serverTimestamp()." }
+      },
+      "required": ["userId", "accountSid", "planTier", "unlimitedTexts", "directRouting", "apiServerPort", "defaultWebhookUrl", "totalMessagesSent", "totalOtpVerified", "createdAt", "updatedAt"]
+    },
+    "ApiKeyRecord": {
+      "title": "ApiKeyRecord",
+      "description": "Developer API key credential for REST API and SDK authentication.",
+      "type": "object",
+      "properties": {
+        "userId": { "type": "string" },
+        "label": { "type": "string" },
+        "secretKey": { "type": "string" },
+        "environment": { "type": "string", "enum": ["LIVE", "TEST"] },
+        "scopes": { "type": "string" },
+        "active": { "type": "boolean" },
+        "requestsCount": { "type": "integer" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["userId", "label", "secretKey", "environment", "scopes", "active", "requestsCount", "createdAt", "updatedAt"]
+    },
+    "PhoneNumberRecord": {
+      "title": "PhoneNumberRecord",
+      "description": "Provisioned global virtual phone number or sender ID.",
+      "type": "object",
+      "properties": {
+        "userId": { "type": "string" },
+        "e164Number": { "type": "string" },
+        "countryCode": { "type": "string" },
+        "countryName": { "type": "string" },
+        "regionLabel": { "type": "string" },
+        "numberType": { "type": "string", "enum": ["LOCAL", "TOLL_FREE", "SHORT_CODE", "ALPHANUMERIC"] },
+        "capabilities": { "type": "string" },
+        "monthlyPriceUsd": { "type": "number" },
+        "webhookUrl": { "type": "string" },
+        "defaultSender": { "type": "boolean" },
+        "status": { "type": "string", "enum": ["ACTIVE", "PAUSED"] },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["userId", "e164Number", "countryCode", "countryName", "regionLabel", "numberType", "capabilities", "monthlyPriceUsd", "webhookUrl", "defaultSender", "status", "createdAt", "updatedAt"]
+    },
+    "SmsMessageRecord": {
+      "title": "SmsMessageRecord",
+      "description": "Dispatched SMS message record with carrier telemetry and webhook delivery status.",
+      "type": "object",
+      "properties": {
+        "userId": { "type": "string" },
+        "sid": { "type": "string" },
+        "direction": { "type": "string", "enum": ["OUTBOUND_API", "OUTBOUND_CONSOLE", "INBOUND"] },
+        "fromNumber": { "type": "string" },
+        "toNumber": { "type": "string" },
+        "countryCode": { "type": "string" },
+        "carrierName": { "type": "string" },
+        "body": { "type": "string" },
+        "segments": { "type": "integer" },
+        "status": { "type": "string", "enum": ["QUEUED", "SENDING", "SENT", "DELIVERED", "FAILED"] },
+        "latencyMs": { "type": "integer" },
+        "priceUsd": { "type": "number" },
+        "apiKeyLabel": { "type": "string" },
+        "webhookStatus": { "type": "string" },
+        "errorMessage": { "type": "string" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["userId", "sid", "direction", "fromNumber", "toNumber", "countryCode", "carrierName", "body", "segments", "status", "latencyMs", "priceUsd", "apiKeyLabel", "webhookStatus", "createdAt", "updatedAt"]
+    },
+    "OtpVerificationRecord": {
+      "title": "OtpVerificationRecord",
+      "description": "OTP verification session tracking code, expiration, attempts, and verification outcome.",
+      "type": "object",
+      "properties": {
+        "userId": { "type": "string" },
+        "sid": { "type": "string" },
+        "serviceName": { "type": "string" },
+        "toNumber": { "type": "string" },
+        "fromNumber": { "type": "string" },
+        "code": { "type": "string" },
+        "channel": { "type": "string", "enum": ["SMS", "FLASH_SMS"] },
+        "status": { "type": "string", "enum": ["PENDING", "APPROVED", "EXPIRED", "MAX_ATTEMPTS"] },
+        "attempts": { "type": "integer" },
+        "maxAttempts": { "type": "integer" },
+        "expiresAtMillis": { "type": "integer" },
+        "verifiedAtMillis": { "type": "integer" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["userId", "sid", "serviceName", "toNumber", "fromNumber", "code", "channel", "status", "attempts", "maxAttempts", "expiresAtMillis", "createdAt", "updatedAt"]
+    },
+    "GitHubIntegration": {
+      "title": "GitHubIntegration",
+      "description": "Connected GitHub repository configured to trigger PulseRelay SMS alerts and deploy OTP gates.",
+      "type": "object",
+      "properties": {
+        "userId": { "type": "string" },
+        "githubUsername": { "type": "string" },
+        "repoFullName": { "type": "string" },
+        "notifyToNumber": { "type": "string" },
+        "triggerMode": { "type": "string", "enum": ["COMMIT_SMS", "DEPLOY_OTP", "RELEASE_ALERT"] },
+        "lastCommitSha": { "type": "string" },
+        "lastCommitMessage": { "type": "string" },
+        "active": { "type": "boolean" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["userId", "githubUsername", "repoFullName", "notifyToNumber", "triggerMode", "lastCommitSha", "lastCommitMessage", "active", "createdAt", "updatedAt"]
+    }
+  },
+  "firestore": {
+    "/users/{userId}": {
+      "schema": { "$ref": "#/entities/AccountSettings" },
+      "description": "Workspace settings and plan tier for the authenticated user."
+    },
+    "/users/{userId}/api_keys/{keyId}": {
+      "schema": { "$ref": "#/entities/ApiKeyRecord" },
+      "description": "API keys managed by the authenticated user."
+    },
+    "/users/{userId}/phone_numbers/{numberId}": {
+      "schema": { "$ref": "#/entities/PhoneNumberRecord" },
+      "description": "Global phone numbers provisioned by the authenticated user."
+    },
+    "/users/{userId}/sms_messages/{messageId}": {
+      "schema": { "$ref": "#/entities/SmsMessageRecord" },
+      "description": "SMS messages sent or received by the authenticated user."
+    },
+    "/users/{userId}/otp_verifications/{otpId}": {
+      "schema": { "$ref": "#/entities/OtpVerificationRecord" },
+      "description": "OTP verification challenges created by the authenticated user."
+    },
+    "/users/{userId}/github_integrations/{integrationId}": {
+      "schema": { "$ref": "#/entities/GitHubIntegration" },
+      "description": "GitHub repositories linked to PulseRelay SMS & OTP alerts."
+    }
+  }
+}

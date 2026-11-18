@@ -1,0 +1,8 @@
+<resources>
+    <string name="app_name">PulseRelay</string>
+    <string name="brand_tagline">Global SMS &amp; OTP Platform</string>
+    <string name="sign_in_with_google">Sign in with Google</string>
+    <string name="sign_out">Sign out</string>
+    <string name="launch_console">Launch Console</string>
+    <string name="view_public_site">Public Site</string>
+</resources>

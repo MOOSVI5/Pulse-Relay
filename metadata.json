@@ -1,0 +1,6 @@
+{
+  "name": "PulseRelay",
+  "description": "Global SMS & OTP messaging platform with developer console, API keys, virtual phone numbers, real-time delivery logs, and local REST API endpoint.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
