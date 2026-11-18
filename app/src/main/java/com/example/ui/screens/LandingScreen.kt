@@ -781,7 +781,7 @@ private fun HeroIntroBlock(
                 )
                 Spacer(Modifier.width(8.dp))
                 Text(
-                    text = "Sign in with Cell Phone Number (SMS OTP)",
+                    text = "Sign in with Phone (SMS OTP)",
                     style = MaterialTheme.typography.labelLarge,
                     color = TelemetryCyan,
                     maxLines = 1,

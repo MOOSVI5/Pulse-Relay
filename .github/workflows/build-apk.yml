@@ -43,11 +43,19 @@ jobs:
           if [ -n "$GOOGLE_SERVICES_JSON" ] && [ ! -f app/google-services.json ]; then
             printf '%s' "$GOOGLE_SERVICES_JSON" > app/google-services.json
           fi
+          if [ -f app/google-services.json ]; then
+            python3 -m json.tool app/google-services.json >/dev/null
+            echo "Firebase config OK ($(wc -c < app/google-services.json) bytes)"
+          else
+            echo "::warning::GOOGLE_SERVICES_JSON secret is missing — Google & Phone Sign-In will be disabled in this APK."
+          fi
           if [ -n "$DEBUG_KEYSTORE_BASE64" ]; then
             printf '%s' "$DEBUG_KEYSTORE_BASE64" | tr -d '[:space:]' | base64 -d > debug.keystore
+            echo "Registered debug.keystore restored from secret"
           elif [ -f debug.keystore.base64 ]; then
             tr -d '[:space:]' < debug.keystore.base64 | base64 -d > debug.keystore
           elif [ ! -f debug.keystore ]; then
+            echo "::warning::DEBUG_KEYSTORE_BASE64 secret is missing — generating temporary keystore (Google Sign-In SHA-1 will not match)."
             keytool -genkeypair -v -keystore debug.keystore \
               -storepass android -alias androiddebugkey -keypass android \
               -keyalg RSA -keysize 2048 -validity 10000 \
