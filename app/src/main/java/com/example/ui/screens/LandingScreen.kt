@@ -23,6 +23,7 @@ import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.rounded.ArrowForward
 import androidx.compose.material.icons.rounded.AllInclusive
@@ -32,8 +33,10 @@ import androidx.compose.material.icons.rounded.Code
 import androidx.compose.material.icons.rounded.DarkMode
 import androidx.compose.material.icons.rounded.LightMode
 import androidx.compose.material.icons.rounded.Lock
+import androidx.compose.material.icons.rounded.PhoneAndroid
 import androidx.compose.material.icons.rounded.Public
 import androidx.compose.material.icons.rounded.Terminal
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.CircularProgressIndicator
@@ -43,11 +46,13 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -62,10 +67,14 @@ import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.credentials.CredentialManager
 import com.example.data.firebase.onGoogleSignInClicked
+import com.example.data.firebase.sendPhoneSignInOtp
+import com.example.data.firebase.verifyPhoneSignInOtp
 import com.example.data.model.GlobalCountryCatalog
 import com.example.ui.components.GlobalMeshHeroCanvas
 import com.example.ui.components.MonoCodeBlock
@@ -75,6 +84,7 @@ import com.example.ui.theme.JetBrainsMonoFont
 import com.example.ui.theme.PulseCrimson
 import com.example.ui.theme.SignalEmerald
 import com.example.ui.theme.TelemetryCyan
+import com.google.firebase.auth.PhoneAuthProvider
 import kotlinx.coroutines.launch
 
 private enum class LandingSnippetLang(val label: String) {
@@ -99,6 +109,7 @@ fun LandingScreen(
     val snackbarHostState = remember { SnackbarHostState() }
 
     var isSigningIn by remember { mutableStateOf(false) }
+    var showPhoneDialog by remember { mutableStateOf(false) }
     var selectedLang by remember { mutableStateOf(LandingSnippetLang.CURL) }
 
     val triggerSignInOrEnter = {
@@ -238,6 +249,7 @@ fun LandingScreen(
                                     isAuthenticated = isAuthenticated,
                                     isSigningIn = isSigningIn,
                                     onPrimaryClick = triggerSignInOrEnter,
+                                    onPhoneSignInClick = { showPhoneDialog = true },
                                     onSecondaryClick = {
                                         scope.launch { scrollState.animateScrollTo(850) }
                                     },
@@ -255,6 +267,7 @@ fun LandingScreen(
                                     isAuthenticated = isAuthenticated,
                                     isSigningIn = isSigningIn,
                                     onPrimaryClick = triggerSignInOrEnter,
+                                    onPhoneSignInClick = { showPhoneDialog = true },
                                     onSecondaryClick = {
                                         scope.launch { scrollState.animateScrollTo(780) }
                                     },
@@ -485,6 +498,184 @@ fun LandingScreen(
             }
         }
     }
+
+    if (showPhoneDialog && !isAuthenticated) {
+        PhoneSignInDialog(
+            onDismiss = { showPhoneDialog = false },
+            onAuthSuccess = {
+                showPhoneDialog = false
+                onAuthSuccess()
+            },
+            onErrorMessage = { msg ->
+                scope.launch { snackbarHostState.showSnackbar(msg) }
+            }
+        )
+    }
+}
+
+@Composable
+private fun PhoneSignInDialog(
+    onDismiss: () -> Unit,
+    onAuthSuccess: () -> Unit,
+    onErrorMessage: (String) -> Unit
+) {
+    val context = LocalContext.current
+    val scope = rememberCoroutineScope()
+
+    var phoneNumber by remember { mutableStateOf("+") }
+    var smsCode by remember { mutableStateOf("") }
+    var verificationId by remember { mutableStateOf<String?>(null) }
+    var resendToken by remember { mutableStateOf<PhoneAuthProvider.ForceResendingToken?>(null) }
+    var isBusy by remember { mutableStateOf(false) }
+    var localError by remember { mutableStateOf<String?>(null) }
+
+    AlertDialog(
+        onDismissRequest = { if (!isBusy) onDismiss() },
+        title = {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Icon(Icons.Rounded.PhoneAndroid, contentDescription = null, tint = TelemetryCyan)
+                Spacer(Modifier.width(8.dp))
+                Text(if (verificationId == null) "Sign in with Phone" else "Enter SMS Code")
+            }
+        },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                Text(
+                    text = if (verificationId == null) {
+                        "Enter your cell phone number with country code (e.g. +14155550199 or +923001234567) to receive a verification code."
+                    } else {
+                        "Enter the 6-digit SMS code sent to $phoneNumber."
+                    },
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+
+                if (verificationId == null) {
+                    OutlinedTextField(
+                        value = phoneNumber,
+                        onValueChange = {
+                            phoneNumber = it
+                            localError = null
+                        },
+                        label = { Text("Cell Phone (E.164)") },
+                        placeholder = { Text("+14155550199") },
+                        singleLine = true,
+                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Phone),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .testTag("phone_signin_number_input")
+                    )
+                } else {
+                    OutlinedTextField(
+                        value = smsCode,
+                        onValueChange = {
+                            smsCode = it.filter { ch -> ch.isDigit() }.take(8)
+                            localError = null
+                        },
+                        label = { Text("6-Digit Verification Code") },
+                        placeholder = { Text("123456") },
+                        singleLine = true,
+                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.NumberPassword),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .testTag("phone_signin_code_input")
+                    )
+                }
+
+                if (!localError.isNullOrBlank()) {
+                    Text(
+                        text = localError.orEmpty(),
+                        style = MaterialTheme.typography.bodySmall,
+                        color = PulseCrimson
+                    )
+                }
+            }
+        },
+        confirmButton = {
+            Button(
+                enabled = !isBusy,
+                colors = ButtonDefaults.buttonColors(containerColor = PulseCrimson),
+                modifier = Modifier.testTag("phone_signin_submit_button"),
+                onClick = {
+                    val vId = verificationId
+                    if (vId == null) {
+                        isBusy = true
+                        localError = null
+                        sendPhoneSignInOtp(
+                            context = context,
+                            phoneNumberE164 = phoneNumber,
+                            scope = scope,
+                            resendToken = resendToken,
+                            onCodeSent = { id, token ->
+                                isBusy = false
+                                verificationId = id
+                                resendToken = token
+                            },
+                            onAutoVerified = {
+                                isBusy = false
+                                onAuthSuccess()
+                            },
+                            onError = { err ->
+                                isBusy = false
+                                localError = err
+                                onErrorMessage(err)
+                            }
+                        )
+                    } else {
+                        isBusy = true
+                        localError = null
+                        verifyPhoneSignInOtp(
+                            verificationId = vId,
+                            smsCode = smsCode,
+                            scope = scope,
+                            onAuthSuccess = {
+                                isBusy = false
+                                onAuthSuccess()
+                            },
+                            onError = { err ->
+                                isBusy = false
+                                localError = err
+                            }
+                        )
+                    }
+                }
+            ) {
+                if (isBusy) {
+                    CircularProgressIndicator(
+                        modifier = Modifier.size(16.dp),
+                        color = Color.White,
+                        strokeWidth = 2.dp
+                    )
+                    Spacer(Modifier.width(6.dp))
+                }
+                Text(
+                    text = if (verificationId == null) "Send SMS Code" else "Verify & Sign In",
+                    color = Color.White
+                )
+            }
+        },
+        dismissButton = {
+            Row {
+                if (verificationId != null && !isBusy) {
+                    TextButton(
+                        onClick = {
+                            verificationId = null
+                            smsCode = ""
+                            localError = null
+                        }
+                    ) {
+                        Text("Change #")
+                    }
+                }
+                TextButton(
+                    enabled = !isBusy,
+                    onClick = onDismiss
+                ) {
+                    Text("Cancel")
+                }
+            }
+        }
+    )
 }
 
 @Composable
@@ -492,6 +683,7 @@ private fun HeroIntroBlock(
     isAuthenticated: Boolean,
     isSigningIn: Boolean,
     onPrimaryClick: () -> Unit,
+    onPhoneSignInClick: () -> Unit,
     onSecondaryClick: () -> Unit,
     modifier: Modifier = Modifier
 ) {
@@ -500,7 +692,7 @@ private fun HeroIntroBlock(
         verticalArrangement = Arrangement.spacedBy(12.dp)
     ) {
         StatusPill(
-            text = "TWILIO-COMPATIBLE API · UNLIMITED OPTION",
+            text = "TWILIO-COMPATIBLE · UNLIMITED SMS",
             color = PulseCrimson
         )
         Text(
@@ -523,7 +715,7 @@ private fun HeroIntroBlock(
                 enabled = !isSigningIn,
                 shape = RoundedCornerShape(14.dp),
                 colors = ButtonDefaults.buttonColors(containerColor = PulseCrimson),
-                contentPadding = PaddingValues(horizontal = 18.dp, vertical = 14.dp),
+                contentPadding = PaddingValues(horizontal = 16.dp, vertical = 14.dp),
                 modifier = Modifier
                     .weight(1f)
                     .testTag("sign_in_google_button")
@@ -535,7 +727,7 @@ private fun HeroIntroBlock(
                         strokeWidth = 2.dp
                     )
                     Spacer(Modifier.width(8.dp))
-                    Text("Connecting...", color = Color.White)
+                    Text("Connecting...", color = Color.White, maxLines = 1)
                 } else {
                     Icon(
                         imageVector = Icons.Rounded.Terminal,
@@ -547,7 +739,9 @@ private fun HeroIntroBlock(
                     Text(
                         text = if (isAuthenticated) "Open Console" else "Sign in with Google",
                         style = MaterialTheme.typography.labelLarge,
-                        color = Color.White
+                        color = Color.White,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
                     )
                 }
             }
@@ -562,7 +756,36 @@ private fun HeroIntroBlock(
                 Text(
                     text = "API Docs",
                     style = MaterialTheme.typography.labelLarge,
-                    color = MaterialTheme.colorScheme.onBackground
+                    color = MaterialTheme.colorScheme.onBackground,
+                    maxLines = 1
+                )
+            }
+        }
+
+        if (!isAuthenticated) {
+            OutlinedButton(
+                onClick = onPhoneSignInClick,
+                enabled = !isSigningIn,
+                shape = RoundedCornerShape(14.dp),
+                border = BorderStroke(1.dp, TelemetryCyan.copy(alpha = 0.5f)),
+                contentPadding = PaddingValues(horizontal = 16.dp, vertical = 12.dp),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .testTag("sign_in_phone_button")
+            ) {
+                Icon(
+                    imageVector = Icons.Rounded.PhoneAndroid,
+                    contentDescription = null,
+                    tint = TelemetryCyan,
+                    modifier = Modifier.size(18.dp)
+                )
+                Spacer(Modifier.width(8.dp))
+                Text(
+                    text = "Sign in with Cell Phone Number (SMS OTP)",
+                    style = MaterialTheme.typography.labelLarge,
+                    color = TelemetryCyan,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
                 )
             }
         }

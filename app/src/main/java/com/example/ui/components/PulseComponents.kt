@@ -259,10 +259,11 @@ fun GlobalMeshHeroCanvas(modifier: Modifier = Modifier) {
                 .fillMaxWidth()
                 .padding(12.dp)
                 .align(Alignment.TopStart),
-            horizontalArrangement = Arrangement.SpaceBetween,
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
             Surface(
+                modifier = Modifier.weight(1f, fill = false),
                 color = Color(0xCC070B14),
                 shape = RoundedCornerShape(999.dp),
                 border = BorderStroke(1.dp, Color(0xFF283552))
@@ -279,9 +280,11 @@ fun GlobalMeshHeroCanvas(modifier: Modifier = Modifier) {
                     )
                     Spacer(Modifier.width(6.dp))
                     Text(
-                        text = "GLOBAL MESH · 195 COUNTRIES",
+                        text = "GLOBAL MESH · 195+",
                         style = MaterialTheme.typography.labelSmall,
-                        color = Color(0xFFF8FAFC)
+                        color = Color(0xFFF8FAFC),
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
                     )
                 }
             }
@@ -292,10 +295,12 @@ fun GlobalMeshHeroCanvas(modifier: Modifier = Modifier) {
                 border = BorderStroke(1.dp, PulseCrimson.copy(alpha = 0.5f))
             ) {
                 Text(
-                    text = "UNLIMITED DIRECT",
+                    text = "UNLIMITED",
                     modifier = Modifier.padding(horizontal = 10.dp, vertical = 5.dp),
                     style = MaterialTheme.typography.labelSmall,
-                    color = PulseCrimson
+                    color = PulseCrimson,
+                    maxLines = 1,
+                    softWrap = false
                 )
             }
         }
@@ -307,16 +312,22 @@ fun GlobalMeshHeroCanvas(modifier: Modifier = Modifier) {
                 .align(Alignment.BottomStart),
             horizontalArrangement = Arrangement.spacedBy(8.dp)
         ) {
-            HeroStatChip(label = "DELIVERY", value = "99.98%", accent = SignalEmerald)
-            HeroStatChip(label = "MEDIAN OTP", value = "112ms", accent = TelemetryCyan)
-            HeroStatChip(label = "TEXT CAP", value = "UNLIMITED", accent = PulseCrimson)
+            HeroStatChip(label = "DELIVERY", value = "99.98%", accent = SignalEmerald, modifier = Modifier.weight(1f))
+            HeroStatChip(label = "MEDIAN OTP", value = "112ms", accent = TelemetryCyan, modifier = Modifier.weight(1f))
+            HeroStatChip(label = "TEXT CAP", value = "UNLIMITED", accent = PulseCrimson, modifier = Modifier.weight(1.15f))
         }
     }
 }
 
 @Composable
-private fun HeroStatChip(label: String, value: String, accent: Color) {
+private fun HeroStatChip(
+    label: String,
+    value: String,
+    accent: Color,
+    modifier: Modifier = Modifier
+) {
     Surface(
+        modifier = modifier,
         color = Color(0xD90B1222),
         shape = RoundedCornerShape(10.dp),
         border = BorderStroke(1.dp, Color(0xFF263248))
@@ -325,15 +336,20 @@ private fun HeroStatChip(label: String, value: String, accent: Color) {
             Text(
                 text = label,
                 style = MaterialTheme.typography.labelSmall.copy(fontSize = 9.sp),
-                color = Color(0xFF94A3B8)
+                color = Color(0xFF94A3B8),
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
             )
             Text(
                 text = value,
                 style = MaterialTheme.typography.labelLarge.copy(
                     fontFamily = JetBrainsMonoFont,
-                    fontWeight = FontWeight.Bold
+                    fontWeight = FontWeight.Bold,
+                    fontSize = 12.sp
                 ),
-                color = accent
+                color = accent,
+                maxLines = 1,
+                softWrap = false
             )
         }
     }

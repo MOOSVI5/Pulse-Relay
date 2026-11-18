@@ -129,7 +129,7 @@ fun PulseRelayApp(
                 BackHandler { showPublicSite = true }
                 ConsoleScaffold(
                     viewModel = consoleViewModel,
-                    userEmail = user.email,
+                    userEmail = user.email?.takeIf { it.isNotBlank() } ?: user.phoneNumber,
                     isDarkTheme = isDarkTheme,
                     onToggleTheme = onToggleTheme,
                     onShowPublicSite = { showPublicSite = true }
