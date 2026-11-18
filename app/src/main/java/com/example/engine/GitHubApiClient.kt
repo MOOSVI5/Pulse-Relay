@@ -29,6 +29,14 @@ data class GitHubCommitInfo(
     val htmlUrl: String
 )
 
+data class GitHubReleaseInfo(
+    val tagName: String,
+    val releaseName: String,
+    val htmlUrl: String,
+    val apkDownloadUrl: String?,
+    val publishedAt: String
+)
+
 class GitHubApiClient {
     private val httpClient = OkHttpClient.Builder()
         .connectTimeout(10, TimeUnit.SECONDS)
@@ -186,6 +194,72 @@ class GitHubApiClient {
                 val hookId = runCatching { JSONObject(body).optLong("id") }.getOrDefault(0L)
                 Result.success("Webhook #$hookId installed on $repoFullName")
             }
+        } catch (e: Exception) {
+            Result.failure(e)
+        }
+    }
+
+    suspend fun fetchLatestRelease(
+        repoFullName: String,
+        personalAccessToken: String = ""
+    ): Result<GitHubReleaseInfo> = withContext(Dispatchers.IO) {
+        try {
+            val cleanRepo = repoFullName.trim()
+            require(cleanRepo.contains("/")) { "Repository must be owner/repo" }
+            val token = personalAccessToken.trim()
+
+            fun executeGet(url: String): Pair<Int, String> {
+                val reqBuilder = Request.Builder()
+                    .url(url)
+                    .header("Accept", "application/vnd.github+json")
+                    .header("X-GitHub-Api-Version", "2022-11-28")
+                    .header("User-Agent", "PulseRelay-Android/1.0")
+                if (token.isNotBlank()) {
+                    reqBuilder.header("Authorization", "Bearer $token")
+                }
+                return httpClient.newCall(reqBuilder.build()).execute().use { resp ->
+                    resp.code to resp.body?.string().orEmpty()
+                }
+            }
+
+            val (latestCode, latestBody) = executeGet("https://api.github.com/repos/$cleanRepo/releases/latest")
+            val releaseObj: JSONObject = if (latestCode in 200..299) {
+                JSONObject(latestBody)
+            } else {
+                val (listCode, listBody) = executeGet("https://api.github.com/repos/$cleanRepo/releases?per_page=1")
+                if (listCode !in 200..299) {
+                    val msg = runCatching { JSONObject(listBody).optString("message") }.getOrNull()
+                        ?.takeIf { it.isNotBlank() } ?: "GitHub Releases HTTP $listCode"
+                    return@withContext Result.failure(IllegalStateException(msg))
+                }
+                val arr = JSONArray(listBody)
+                if (arr.length() == 0) {
+                    return@withContext Result.failure(IllegalStateException("No releases published yet for $cleanRepo"))
+                }
+                arr.getJSONObject(0)
+            }
+
+            val assets = releaseObj.optJSONArray("assets")
+            var apkUrl: String? = null
+            if (assets != null) {
+                for (i in 0 until assets.length()) {
+                    val asset = assets.getJSONObject(i)
+                    val assetName = asset.optString("name")
+                    if (assetName.endsWith(".apk", ignoreCase = true)) {
+                        apkUrl = asset.optString("browser_download_url").takeIf { it.isNotBlank() }
+                        break
+                    }
+                }
+            }
+            Result.success(
+                GitHubReleaseInfo(
+                    tagName = releaseObj.optString("tag_name").ifBlank { "latest" },
+                    releaseName = releaseObj.optString("name").ifBlank { releaseObj.optString("tag_name") },
+                    htmlUrl = releaseObj.optString("html_url"),
+                    apkDownloadUrl = apkUrl,
+                    publishedAt = releaseObj.optString("published_at")
+                )
+            )
         } catch (e: Exception) {
             Result.failure(e)
         }

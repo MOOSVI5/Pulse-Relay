@@ -5,6 +5,9 @@ on:
     branches: [ main, master ]
   workflow_dispatch:
 
+permissions:
+  contents: write
+
 jobs:
   build:
     runs-on: ubuntu-latest
@@ -41,9 +44,9 @@ jobs:
             printf '%s' "$GOOGLE_SERVICES_JSON" > app/google-services.json
           fi
           if [ -n "$DEBUG_KEYSTORE_BASE64" ]; then
-            printf '%s' "$DEBUG_KEYSTORE_BASE64" | base64 -d > debug.keystore
+            printf '%s' "$DEBUG_KEYSTORE_BASE64" | tr -d '[:space:]' | base64 -d > debug.keystore
           elif [ -f debug.keystore.base64 ]; then
-            base64 -d debug.keystore.base64 > debug.keystore
+            tr -d '[:space:]' < debug.keystore.base64 | base64 -d > debug.keystore
           elif [ ! -f debug.keystore ]; then
             keytool -genkeypair -v -keystore debug.keystore \
               -storepass android -alias androiddebugkey -keypass android \
@@ -52,10 +55,24 @@ jobs:
           fi
 
       - name: Build Debug APK
-        run: gradle :app:assembleDebug
+        run: |
+          gradle :app:assembleDebug -PversionCodeOverride=${{ github.run_number }} -PversionNameOverride=1.0.${{ github.run_number }}
+          cp app/build/outputs/apk/debug/app-debug.apk PulseRelay-latest.apk
 
-      - name: Upload Debug APK
+      - name: Upload Debug APK Artifact
         uses: actions/upload-artifact@v4
         with:
           name: PulseRelay-debug-apk
           path: app/build/outputs/apk/debug/app-debug.apk
+
+      - name: Publish Rolling APK Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: latest
+          name: PulseRelay v1.0.${{ github.run_number }}
+          body: |
+            Automated PulseRelay APK build #${{ github.run_number }} (version 1.0.${{ github.run_number }}).
+            Direct APK download: `PulseRelay-latest.apk`
+          files: PulseRelay-latest.apk
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

@@ -89,6 +89,7 @@ fun ApiPlaygroundScreen(
     requestLogs: List<ApiRequestLog>,
     firebaseLatencyMs: Long?,
     fetchedRepos: List<GitHubRepoSummary>,
+    latestRelease: com.example.engine.GitHubReleaseInfo?,
     onToggleServer: (Boolean) -> Unit,
     onSavePlanSettings: (PlanTier, Boolean, String) -> Unit,
     onExecuteHttpRequest: (method: String, path: String, bearerSecret: String, jsonBody: String) -> Unit,
@@ -99,6 +100,7 @@ fun ApiPlaygroundScreen(
     onInstallWebhook: (GitHubIntegrationRecord, String, String) -> Unit,
     onToggleGitHubIntegration: (GitHubIntegrationRecord, Boolean) -> Unit,
     onDeleteGitHubIntegration: (String) -> Unit,
+    onCheckAppUpdate: (repoFullName: String, pat: String) -> Unit,
     onCopied: (String) -> Unit
 ) {
     var activeSubTab by remember { mutableStateOf(ApiScreenSubTab.LIVE_API) }
@@ -150,13 +152,16 @@ fun ApiPlaygroundScreen(
                 isBusy = isBusy,
                 firebaseLatencyMs = firebaseLatencyMs,
                 fetchedRepos = fetchedRepos,
+                latestRelease = latestRelease,
                 onVerifyFirebase = onVerifyFirebase,
                 onFetchRepos = onFetchRepos,
                 onLinkRepo = onLinkRepo,
                 onTriggerCommitAlert = onTriggerCommitAlert,
                 onInstallWebhook = onInstallWebhook,
                 onToggleIntegration = onToggleGitHubIntegration,
-                onDeleteIntegration = onDeleteGitHubIntegration
+                onDeleteIntegration = onDeleteGitHubIntegration,
+                onCheckAppUpdate = onCheckAppUpdate,
+                onCopied = onCopied
             )
         }
     }

@@ -1,5 +1,7 @@
 package com.example.ui.screens
 
+import android.content.Intent
+import android.net.Uri
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
@@ -23,10 +25,13 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.Bolt
 import androidx.compose.material.icons.rounded.CloudDone
 import androidx.compose.material.icons.rounded.Code
+import androidx.compose.material.icons.rounded.ContentCopy
 import androidx.compose.material.icons.rounded.DeleteOutline
 import androidx.compose.material.icons.rounded.Link
+import androidx.compose.material.icons.rounded.OpenInBrowser
 import androidx.compose.material.icons.rounded.Refresh
 import androidx.compose.material.icons.rounded.Sync
+import androidx.compose.material.icons.rounded.SystemUpdate
 import androidx.compose.material.icons.rounded.Webhook
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
@@ -47,15 +52,19 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import com.example.BuildConfig
 import com.example.R
 import com.example.data.model.GitHubIntegrationRecord
 import com.example.data.model.GitHubTriggerMode
+import com.example.engine.GitHubReleaseInfo
 import com.example.engine.GitHubRepoSummary
 import com.example.ui.components.StatusPill
 import com.example.ui.theme.JetBrainsMonoFont
@@ -73,22 +82,27 @@ fun GitHubFirebaseSection(
     isBusy: Boolean,
     firebaseLatencyMs: Long?,
     fetchedRepos: List<GitHubRepoSummary>,
+    latestRelease: GitHubReleaseInfo?,
     onVerifyFirebase: () -> Unit,
     onFetchRepos: (username: String, pat: String) -> Unit,
     onLinkRepo: (username: String, repoFullName: String, toNumber: String, mode: GitHubTriggerMode, pat: String) -> Unit,
     onTriggerCommitAlert: (GitHubIntegrationRecord, String) -> Unit,
     onInstallWebhook: (GitHubIntegrationRecord, String, String) -> Unit,
     onToggleIntegration: (GitHubIntegrationRecord, Boolean) -> Unit,
-    onDeleteIntegration: (String) -> Unit
+    onDeleteIntegration: (String) -> Unit,
+    onCheckAppUpdate: (repoFullName: String, pat: String) -> Unit,
+    onCopied: (String) -> Unit
 ) {
     val context = LocalContext.current
+    val clipboard = LocalClipboardManager.current
     val databaseId = remember(context) { context.getString(R.string.firestore_database_id) }
 
-    var githubUsername by remember { mutableStateOf("octocat") }
+    var githubUsername by remember { mutableStateOf("MOOSVI5") }
     var githubPat by remember { mutableStateOf("") }
     var selectedRepo by remember(fetchedRepos) {
-        mutableStateOf(fetchedRepos.firstOrNull()?.fullName ?: "octocat/Hello-World")
+        mutableStateOf(fetchedRepos.firstOrNull()?.fullName ?: "MOOSVI5/Pulse-Relay")
     }
+    var updateRepoSlug by remember { mutableStateOf("MOOSVI5/Pulse-Relay") }
     var notifyToNumber by remember { mutableStateOf("+14155550199") }
     var triggerMode by remember { mutableStateOf(GitHubTriggerMode.COMMIT_SMS) }
 
@@ -160,6 +174,119 @@ fun GitHubFirebaseSection(
                         Icon(Icons.Rounded.Sync, contentDescription = null, modifier = Modifier.size(16.dp))
                         Spacer(Modifier.width(6.dp))
                         Text("Verify Live Firestore Ping")
+                    }
+                }
+            }
+        }
+
+        // 1b. App Updates & Permanent APK Link (GitHub Releases)
+        item {
+            val permanentReleaseUrl = "https://github.com/${updateRepoSlug.trim()}/releases/latest"
+            Surface(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .widthIn(max = 880.dp),
+                color = MaterialTheme.colorScheme.surfaceContainer,
+                shape = RoundedCornerShape(18.dp),
+                border = BorderStroke(1.dp, WarningAmber.copy(alpha = 0.45f))
+            ) {
+                Column(
+                    modifier = Modifier.padding(16.dp),
+                    verticalArrangement = Arrangement.spacedBy(10.dp)
+                ) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Icon(Icons.Rounded.SystemUpdate, contentDescription = null, tint = WarningAmber)
+                            Spacer(Modifier.width(8.dp))
+                            Column {
+                                Text(
+                                    text = "App Updates (GitHub Releases)",
+                                    style = MaterialTheme.typography.titleMedium
+                                )
+                                Text(
+                                    text = "Installed: v${BuildConfig.VERSION_NAME} (build ${BuildConfig.VERSION_CODE})",
+                                    style = MaterialTheme.typography.bodyMedium,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            }
+                        }
+                        StatusPill(
+                            text = latestRelease?.releaseName ?: "AUTO-RELEASE",
+                            color = if (latestRelease != null) SignalEmerald else WarningAmber
+                        )
+                    }
+
+                    OutlinedTextField(
+                        value = updateRepoSlug,
+                        onValueChange = { updateRepoSlug = it },
+                        label = { Text("App Release Repo (owner/repo)") },
+                        singleLine = true,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .testTag("update_repo_input")
+                    )
+
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        Button(
+                            onClick = { onCheckAppUpdate(updateRepoSlug, githubPat) },
+                            enabled = !isBusy && updateRepoSlug.contains("/"),
+                            shape = RoundedCornerShape(10.dp),
+                            colors = ButtonDefaults.buttonColors(containerColor = WarningAmber),
+                            modifier = Modifier
+                                .weight(1f)
+                                .testTag("check_app_update_button")
+                        ) {
+                            Icon(Icons.Rounded.Refresh, contentDescription = null, tint = Color(0xFF1A1200))
+                            Spacer(Modifier.width(6.dp))
+                            Text("Check Update", color = Color(0xFF1A1200))
+                        }
+
+                        OutlinedButton(
+                            onClick = {
+                                val targetUrl = latestRelease?.apkDownloadUrl
+                                    ?: latestRelease?.htmlUrl?.takeIf { it.isNotBlank() }
+                                    ?: permanentReleaseUrl
+                                runCatching {
+                                    context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(targetUrl)))
+                                }
+                            },
+                            shape = RoundedCornerShape(10.dp),
+                            modifier = Modifier.testTag("open_apk_release_button")
+                        ) {
+                            Icon(Icons.Rounded.OpenInBrowser, contentDescription = null, modifier = Modifier.size(16.dp))
+                            Spacer(Modifier.width(6.dp))
+                            Text(if (latestRelease?.apkDownloadUrl != null) "Download APK" else "Open Releases")
+                        }
+
+                        IconButton(
+                            onClick = {
+                                val shareUrl = latestRelease?.apkDownloadUrl ?: permanentReleaseUrl
+                                clipboard.setText(AnnotatedString(shareUrl))
+                                onCopied("Permanent update link copied")
+                            },
+                            modifier = Modifier.size(44.dp)
+                        ) {
+                            Icon(
+                                imageVector = Icons.Rounded.ContentCopy,
+                                contentDescription = "Copy permanent APK link",
+                                tint = TelemetryCyan
+                            )
+                        }
+                    }
+
+                    if (latestRelease != null) {
+                        Text(
+                            text = "Latest on GitHub: ${latestRelease.releaseName} (${latestRelease.tagName})",
+                            style = MaterialTheme.typography.labelSmall.copy(fontFamily = JetBrainsMonoFont),
+                            color = SignalEmerald
+                        )
                     }
                 }
             }

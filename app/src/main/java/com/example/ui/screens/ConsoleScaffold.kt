@@ -95,6 +95,7 @@ fun ConsoleScaffold(
     val lastApiResult by viewModel.lastApiResult.collectAsStateWithLifecycle()
     val firebaseLatencyMs by viewModel.firebaseLatencyMs.collectAsStateWithLifecycle()
     val fetchedRepos by viewModel.fetchedGitHubRepos.collectAsStateWithLifecycle()
+    val latestRelease by viewModel.latestRelease.collectAsStateWithLifecycle()
 
     var activeTab by remember { mutableStateOf(ConsoleTab.OVERVIEW) }
     var messagingSubTab by remember { mutableStateOf(MessagingSubTab.SEND_SMS) }
@@ -335,6 +336,7 @@ fun ConsoleScaffold(
                                     requestLogs = apiRequestLogs,
                                     firebaseLatencyMs = firebaseLatencyMs,
                                     fetchedRepos = fetchedRepos,
+                                    latestRelease = latestRelease,
                                     onToggleServer = { viewModel.toggleApiServer(it) },
                                     onSavePlanSettings = { tier, direct, webhook ->
                                         viewModel.updateAccountSettings(tier, direct, webhook)
@@ -358,6 +360,9 @@ fun ConsoleScaffold(
                                     },
                                     onDeleteGitHubIntegration = { id ->
                                         viewModel.deleteGitHubIntegration(id)
+                                    },
+                                    onCheckAppUpdate = { repo, pat ->
+                                        viewModel.checkAppUpdate(repo, pat)
                                     },
                                     onCopied = notifyCopied
                                 )

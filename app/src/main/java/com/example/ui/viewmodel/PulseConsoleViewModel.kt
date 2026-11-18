@@ -20,6 +20,7 @@ import com.example.data.model.PhoneNumberRecord
 import com.example.data.model.PlanTier
 import com.example.data.model.SmsMessageRecord
 import com.example.engine.GitHubApiClient
+import com.example.engine.GitHubReleaseInfo
 import com.example.engine.GitHubRepoSummary
 import com.example.engine.OtpCheckResult
 import com.example.engine.PulseApiServer
@@ -101,6 +102,9 @@ class PulseConsoleViewModel(
 
     private val _fetchedGitHubRepos = MutableStateFlow<List<GitHubRepoSummary>>(emptyList())
     val fetchedGitHubRepos: StateFlow<List<GitHubRepoSummary>> = _fetchedGitHubRepos.asStateFlow()
+
+    private val _latestRelease = MutableStateFlow<GitHubReleaseInfo?>(null)
+    val latestRelease: StateFlow<GitHubReleaseInfo?> = _latestRelease.asStateFlow()
 
     val dashboardState: StateFlow<UiState<ConsoleDashboardData>> = combine(
         combine(
@@ -596,6 +600,21 @@ class PulseConsoleViewModel(
         viewModelScope.launch {
             val res = repository.deleteGitHubIntegration(integrationId)
             _toastMessage.value = if (res.isSuccess) "GitHub integration removed" else "Failed to remove integration"
+        }
+    }
+
+    fun checkAppUpdate(repoFullName: String, personalAccessToken: String = "") {
+        viewModelScope.launch {
+            _isBusy.value = true
+            val res = githubClient.fetchLatestRelease(repoFullName, personalAccessToken)
+            _isBusy.value = false
+            if (res.isSuccess) {
+                val release = res.getOrThrow()
+                _latestRelease.value = release
+                _toastMessage.value = "Latest release found: ${release.releaseName}"
+            } else {
+                _toastMessage.value = res.exceptionOrNull()?.message ?: "Could not check GitHub releases"
+            }
         }
     }
 
