@@ -13,9 +13,9 @@ import com.example.data.model.PlanTier
 import com.example.data.model.SmsMessageRecord
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.delay
-import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import okhttp3.Credentials
+import okhttp3.FormBody
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
 import okhttp3.Request
@@ -39,18 +39,30 @@ data class OtpCheckResult(
 
 class SendingEngine(
     private val repository: PulseRepository,
-    private val scope: CoroutineScope
+    private val scope: CoroutineScope,
+    private val gsmSimSmsSender: GsmSimSmsSender = GsmSimSmsSender(null)
 ) {
     private val secureRandom = SecureRandom()
     private val httpClient = OkHttpClient.Builder()
-        .connectTimeout(5, TimeUnit.SECONDS)
-        .readTimeout(5, TimeUnit.SECONDS)
-        .writeTimeout(5, TimeUnit.SECONDS)
+        .connectTimeout(10, TimeUnit.SECONDS)
+        .readTimeout(15, TimeUnit.SECONDS)
+        .writeTimeout(10, TimeUnit.SECONDS)
         .build()
 
+    fun simDiagnostics(): SimDiagnostics = gsmSimSmsSender.diagnostics()
+
+    fun normalizePhoneNumber(raw: String): String {
+        val stripped = raw.trim().replace(Regex("[\\s()\\-]"), "")
+        return if (stripped.startsWith("00") && stripped.length > 4) {
+            "+" + stripped.substring(2)
+        } else {
+            stripped
+        }
+    }
+
     fun isValidE164(phone: String): Boolean {
-        val trimmed = phone.trim()
-        return trimmed.matches(Regex("^\\+[1-9]\\d{6,14}$"))
+        val normalized = normalizePhoneNumber(phone)
+        return normalized.matches(Regex("^\\+[1-9]\\d{6,14}$"))
     }
 
     fun calculateSegments(body: String): Int {
@@ -77,24 +89,44 @@ class SendingEngine(
         apiKeyLabel: String,
         settings: AccountSettings?,
         ownedNumbers: List<PhoneNumberRecord>,
-        apiKeyId: String? = null
+        apiKeyId: String? = null,
+        transportMode: SmsTransportMode = SmsTransportMode.GSM_SIM,
+        twilioConfig: TwilioGatewayConfig = TwilioGatewayConfig()
     ): Result<SmsDispatchResult> {
-        val cleanTo = toNumber.trim()
-        val cleanFrom = fromNumber.trim().ifBlank {
-            ownedNumbers.firstOrNull { it.defaultSender }?.e164Number
-                ?: ownedNumbers.firstOrNull()?.e164Number
-                ?: "+14158904321"
+        val cleanTo = normalizePhoneNumber(toNumber)
+        val cleanFrom = if (transportMode == SmsTransportMode.TWILIO_CLOUD && twilioConfig.fromNumber.isNotBlank()) {
+            normalizePhoneNumber(twilioConfig.fromNumber)
+        } else {
+            fromNumber.trim().ifBlank {
+                ownedNumbers.firstOrNull { it.defaultSender }?.e164Number
+                    ?: ownedNumbers.firstOrNull()?.e164Number
+                    ?: "SIM-GSM"
+            }
         }
         val cleanBody = body.trim()
 
         if (!isValidE164(cleanTo)) {
-            return Result.failure(IllegalArgumentException("Recipient must be valid E.164 format (e.g., +14155550199)"))
+            return Result.failure(
+                IllegalArgumentException("Recipient must include country code in E.164 format (e.g., +923001234567 or +14155550199)")
+            )
         }
         if (cleanBody.isEmpty() || cleanBody.length > 1600) {
             return Result.failure(IllegalArgumentException("Message body must be between 1 and 1600 characters"))
         }
 
+        if (transportMode == SmsTransportMode.TWILIO_CLOUD && !twilioConfig.isConfigured()) {
+            return Result.failure(
+                IllegalArgumentException("Twilio Cloud selected: configure Account SID, Auth Token & From Number in API tab, or switch to Phone GSM SIM.")
+            )
+        }
+
+        val simDiag = gsmSimSmsSender.diagnostics()
         val carrier = GlobalCountryCatalog.resolveDestination(cleanTo)
+        val carrierLabel = if (transportMode == SmsTransportMode.GSM_SIM) {
+            "SIM (${simDiag.carrierName}) -> ${carrier.countryCode}"
+        } else {
+            "Twilio Cloud -> ${carrier.carrierName}"
+        }.take(60)
         val segments = calculateSegments(cleanBody).toLong()
         val planTier = PlanTier.fromRaw(settings?.planTier)
         val priceUsd = estimatePriceUsd(segments.toInt(), planTier, cleanTo)
@@ -106,7 +138,7 @@ class SendingEngine(
             fromNumber = cleanFrom,
             toNumber = cleanTo,
             countryCode = carrier.countryCode,
-            carrierName = carrier.carrierName,
+            carrierName = carrierLabel,
             body = cleanBody,
             segments = segments,
             status = MessageStatus.QUEUED.name,
@@ -118,7 +150,7 @@ class SendingEngine(
 
         val createRes = repository.createSmsMessage(initialRecord)
         if (createRes.isFailure) {
-            return Result.failure(createRes.exceptionOrNull() ?: IllegalStateException("Failed to enqueue SMS"))
+            return Result.failure(createRes.exceptionOrNull() ?: IllegalStateException("Failed to log SMS in workspace"))
         }
         val messageId = createRes.getOrThrow()
 
@@ -126,35 +158,128 @@ class SendingEngine(
             repository.incrementApiKeyUsage(apiKeyId)
         }
 
-        // Resolve webhook URL (number-specific overrides global account webhook)
         val senderObj = ownedNumbers.firstOrNull { it.e164Number == cleanFrom }
         val webhookUrl = senderObj?.webhookUrl?.takeIf { it.isNotBlank() }
             ?: settings?.defaultWebhookUrl?.takeIf { it.isNotBlank() }
 
-        // Execute async carrier routing & webhook callback pipeline
-        scope.launch(Dispatchers.IO) {
-            delay(180L)
-            repository.updateSmsDelivery(messageId, MessageStatus.SENDING, 0L, "NONE")
+        repository.updateSmsDelivery(messageId, MessageStatus.SENDING, 0L, "NONE")
 
-            val jitter = secureRandom.nextInt(38) - 14
-            val deliveryLatency = (carrier.avgLatencyMs + jitter).coerceIn(55, 450).toLong()
-            delay(deliveryLatency + 240L)
+        return when (transportMode) {
+            SmsTransportMode.GSM_SIM -> {
+                val radioOutcome = gsmSimSmsSender.dispatchRealSimSms(
+                    toNumber = cleanTo,
+                    body = cleanBody,
+                    scope = scope,
+                    onDelivered = { totalLatencyMs ->
+                        val dlrWebhook = if (!webhookUrl.isNullOrBlank()) {
+                            dispatchWebhook(webhookUrl, sid, cleanFrom, cleanTo, cleanBody, "DELIVERED", totalLatencyMs)
+                        } else {
+                            "SIM_DLR_OK"
+                        }
+                        repository.updateSmsDelivery(
+                            messageId = messageId,
+                            status = MessageStatus.DELIVERED,
+                            latencyMs = totalLatencyMs,
+                            webhookStatus = dlrWebhook
+                        )
+                    },
+                    onDeliveryTimeout = {
+                        // Carrier accepted via SMS_SENT; no explicit SMS_DELIVERED report returned within 30s
+                    }
+                )
 
-            val webhookResult = if (!webhookUrl.isNullOrBlank()) {
-                dispatchWebhook(webhookUrl, sid, cleanFrom, cleanTo, cleanBody, "DELIVERED", deliveryLatency)
-            } else {
-                "NONE"
+                when (radioOutcome) {
+                    is SimRadioOutcome.SentToCarrier -> {
+                        val sentWebhook = if (!webhookUrl.isNullOrBlank()) {
+                            dispatchWebhook(webhookUrl, sid, cleanFrom, cleanTo, cleanBody, "SENT", radioOutcome.latencyMs)
+                        } else {
+                            "SIM_RADIO_SENT"
+                        }
+                        repository.updateSmsDelivery(
+                            messageId = messageId,
+                            status = MessageStatus.SENT,
+                            latencyMs = radioOutcome.latencyMs,
+                            webhookStatus = sentWebhook
+                        )
+                        Result.success(
+                            SmsDispatchResult(
+                                messageId = messageId,
+                                record = initialRecord.copy(
+                                    id = messageId,
+                                    status = MessageStatus.SENT.name,
+                                    latencyMs = radioOutcome.latencyMs,
+                                    webhookStatus = sentWebhook
+                                )
+                            )
+                        )
+                    }
+
+                    is SimRadioOutcome.Failed -> {
+                        val failWebhook = if (!webhookUrl.isNullOrBlank()) {
+                            dispatchWebhook(webhookUrl, sid, cleanFrom, cleanTo, cleanBody, "FAILED", 0L)
+                        } else {
+                            "SIM_FAILED"
+                        }
+                        repository.updateSmsDelivery(
+                            messageId = messageId,
+                            status = MessageStatus.FAILED,
+                            latencyMs = 0L,
+                            webhookStatus = failWebhook,
+                            errorMessage = radioOutcome.errorMessage
+                        )
+                        Result.failure(IllegalStateException(radioOutcome.errorMessage))
+                    }
+                }
             }
 
-            repository.updateSmsDelivery(
-                messageId = messageId,
-                status = MessageStatus.DELIVERED,
-                latencyMs = deliveryLatency,
-                webhookStatus = webhookResult
-            )
+            SmsTransportMode.TWILIO_CLOUD -> {
+                val cloudRes = dispatchViaTwilioCloud(
+                    config = twilioConfig,
+                    to = cleanTo,
+                    body = cleanBody
+                )
+                if (cloudRes.isSuccess) {
+                    val latencyMs = cloudRes.getOrThrow()
+                    val webhookResult = if (!webhookUrl.isNullOrBlank()) {
+                        dispatchWebhook(webhookUrl, sid, cleanFrom, cleanTo, cleanBody, "SENT", latencyMs)
+                    } else {
+                        "TWILIO_201"
+                    }
+                    repository.updateSmsDelivery(
+                        messageId = messageId,
+                        status = MessageStatus.SENT,
+                        latencyMs = latencyMs,
+                        webhookStatus = webhookResult
+                    )
+                    Result.success(
+                        SmsDispatchResult(
+                            messageId = messageId,
+                            record = initialRecord.copy(
+                                id = messageId,
+                                status = MessageStatus.SENT.name,
+                                latencyMs = latencyMs,
+                                webhookStatus = webhookResult
+                            )
+                        )
+                    )
+                } else {
+                    val err = cloudRes.exceptionOrNull()?.message ?: "Twilio API request failed"
+                    val webhookResult = if (!webhookUrl.isNullOrBlank()) {
+                        dispatchWebhook(webhookUrl, sid, cleanFrom, cleanTo, cleanBody, "FAILED", 0L)
+                    } else {
+                        "TWILIO_FAILED"
+                    }
+                    repository.updateSmsDelivery(
+                        messageId = messageId,
+                        status = MessageStatus.FAILED,
+                        latencyMs = 0L,
+                        webhookStatus = webhookResult,
+                        errorMessage = err
+                    )
+                    Result.failure(IllegalStateException(err))
+                }
+            }
         }
-
-        return Result.success(SmsDispatchResult(messageId, initialRecord.copy(id = messageId)))
     }
 
     suspend fun sendOtpVerification(
@@ -168,22 +293,48 @@ class SendingEngine(
         apiKeyLabel: String,
         settings: AccountSettings?,
         ownedNumbers: List<PhoneNumberRecord>,
-        apiKeyId: String? = null
+        apiKeyId: String? = null,
+        transportMode: SmsTransportMode = SmsTransportMode.GSM_SIM,
+        twilioConfig: TwilioGatewayConfig = TwilioGatewayConfig()
     ): Result<OtpVerificationRecord> {
-        val cleanTo = toNumber.trim()
+        val cleanTo = normalizePhoneNumber(toNumber)
         if (!isValidE164(cleanTo)) {
-            return Result.failure(IllegalArgumentException("Recipient must be valid E.164 format (e.g., +447700900412)"))
+            return Result.failure(
+                IllegalArgumentException("Recipient must be valid E.164 format (e.g., +923001234567 or +447700900412)")
+            )
         }
         val safeLen = codeLength.coerceIn(4, 8)
         val code = buildString(safeLen) {
             repeat(safeLen) { append(secureRandom.nextInt(10)) }
         }
-        val cleanService = serviceName.trim().ifBlank { "PulseAuth Global" }.take(80)
+        val cleanService = serviceName.trim().ifBlank { "PulseAuth" }.take(80)
         val cleanFrom = fromNumber.trim().ifBlank {
             ownedNumbers.firstOrNull { it.defaultSender }?.e164Number
                 ?: ownedNumbers.firstOrNull()?.e164Number
-                ?: "+14158904321"
+                ?: "SIM-GSM"
         }
+        val ttlMinutes = (ttlSeconds / 60).coerceAtLeast(1)
+        val smsBody = "$cleanService verification code: $code. Valid for $ttlMinutes min. Do not share."
+
+        // Dispatch real SMS first so OTP challenge is only activated when carrier radio accepts it
+        val smsResult = sendSms(
+            toNumber = cleanTo,
+            fromNumber = cleanFrom,
+            body = smsBody,
+            direction = direction,
+            apiKeyLabel = apiKeyLabel,
+            settings = settings,
+            ownedNumbers = ownedNumbers,
+            apiKeyId = apiKeyId,
+            transportMode = transportMode,
+            twilioConfig = twilioConfig
+        )
+        if (smsResult.isFailure) {
+            return Result.failure(
+                smsResult.exceptionOrNull() ?: IllegalStateException("Failed to transmit OTP SMS")
+            )
+        }
+
         val expiresAt = System.currentTimeMillis() + (ttlSeconds.coerceIn(60, 1800) * 1000L)
         val sid = "VE${PulseRepository.randomHex(16)}"
 
@@ -202,24 +353,9 @@ class SendingEngine(
 
         val createOtpRes = repository.createOtpVerification(otpRecord)
         if (createOtpRes.isFailure) {
-            return Result.failure(createOtpRes.exceptionOrNull() ?: IllegalStateException("Failed to create OTP challenge"))
+            return Result.failure(createOtpRes.exceptionOrNull() ?: IllegalStateException("SMS sent, but failed to store OTP challenge"))
         }
-        val otpId = createOtpRes.getOrThrow()
-
-        val ttlMinutes = (ttlSeconds / 60).coerceAtLeast(1)
-        val smsBody = "$cleanService verification code: $code. Valid for $ttlMinutes min. Do not share."
-        sendSms(
-            toNumber = cleanTo,
-            fromNumber = cleanFrom,
-            body = smsBody,
-            direction = direction,
-            apiKeyLabel = apiKeyLabel,
-            settings = settings,
-            ownedNumbers = ownedNumbers,
-            apiKeyId = apiKeyId
-        )
-
-        return Result.success(otpRecord.copy(id = otpId))
+        return Result.success(otpRecord.copy(id = createOtpRes.getOrThrow()))
     }
 
     suspend fun verifyOtpCode(
@@ -227,10 +363,10 @@ class SendingEngine(
         submittedCode: String,
         activeOtps: List<OtpVerificationRecord>
     ): Result<OtpCheckResult> {
-        val cleanTo = toNumber.trim()
+        val cleanTo = normalizePhoneNumber(toNumber)
         val cleanCode = submittedCode.trim()
         val target = activeOtps.firstOrNull {
-            it.toNumber == cleanTo && OtpStatus.fromRaw(it.status) == OtpStatus.PENDING
+            normalizePhoneNumber(it.toNumber) == cleanTo && OtpStatus.fromRaw(it.status) == OtpStatus.PENDING
         } ?: return Result.success(
             OtpCheckResult(
                 valid = false,
@@ -284,6 +420,46 @@ class SendingEngine(
                     otpSid = target.sid
                 )
             )
+        }
+    }
+
+    private suspend fun dispatchViaTwilioCloud(
+        config: TwilioGatewayConfig,
+        to: String,
+        body: String
+    ): Result<Long> = withContext(Dispatchers.IO) {
+        val startNs = System.nanoTime()
+        try {
+            val sid = config.accountSid.trim()
+            val token = config.authToken.trim()
+            val from = normalizePhoneNumber(config.fromNumber)
+            val formBody = FormBody.Builder()
+                .add("To", to)
+                .add("From", from)
+                .add("Body", body)
+                .build()
+
+            val request = Request.Builder()
+                .url("https://api.twilio.com/2010-04-01/Accounts/$sid/Messages.json")
+                .header("Authorization", Credentials.basic(sid, token))
+                .post(formBody)
+                .build()
+
+            httpClient.newCall(request).execute().use { resp ->
+                val raw = resp.body?.string().orEmpty()
+                val elapsed = ((System.nanoTime() - startNs) / 1_000_000L).coerceAtLeast(1L)
+                if (resp.isSuccessful) {
+                    Result.success(elapsed)
+                } else {
+                    val msg = runCatching { JSONObject(raw).optString("message") }
+                        .getOrNull()
+                        ?.takeIf { it.isNotBlank() }
+                        ?: "Twilio HTTP ${resp.code}"
+                    Result.failure(IllegalStateException(msg))
+                }
+            }
+        } catch (e: Exception) {
+            Result.failure(IllegalStateException(e.localizedMessage ?: "Twilio network error"))
         }
     }
 

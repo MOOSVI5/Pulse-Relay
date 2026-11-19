@@ -21,6 +21,7 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.rounded.Send
 import androidx.compose.material.icons.rounded.CheckCircle
@@ -54,6 +55,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -66,6 +68,9 @@ import com.example.data.model.OtpVerificationRecord
 import com.example.data.model.PlanTier
 import com.example.data.model.SmsMessageRecord
 import com.example.engine.OtpCheckResult
+import com.example.engine.SimDiagnostics
+import com.example.engine.SmsTransportMode
+import com.example.ui.components.SimGatewayStatusBanner
 import com.example.ui.components.StatusPill
 import com.example.ui.theme.JetBrainsMonoFont
 import com.example.ui.theme.PulseCrimson
@@ -96,10 +101,15 @@ private val globalQuickRecipients = listOf(
 fun MessagingVerifyScreen(
     data: ConsoleDashboardData,
     initialSubTab: MessagingSubTab,
+    simDiagnostics: SimDiagnostics,
+    transportMode: SmsTransportMode,
+    twilioConfigured: Boolean,
     isBusy: Boolean,
     lastOtpCheck: OtpCheckResult?,
     calculateSegments: (String) -> Int,
     estimatePrice: (Int, PlanTier, String) -> Double,
+    onRequestSmsPermission: () -> Unit,
+    onOpenApiSettings: () -> Unit,
     onSendSms: (to: String, from: String, body: String) -> Unit,
     onSendOtp: (to: String, from: String, service: String, length: Int, channel: OtpChannel) -> Unit,
     onCheckOtp: (to: String, code: String) -> Unit,
@@ -137,15 +147,25 @@ fun MessagingVerifyScreen(
         when (activeTab) {
             MessagingSubTab.SEND_SMS -> SendSmsSection(
                 data = data,
+                simDiagnostics = simDiagnostics,
+                transportMode = transportMode,
+                twilioConfigured = twilioConfigured,
                 isBusy = isBusy,
                 calculateSegments = calculateSegments,
                 estimatePrice = estimatePrice,
+                onRequestSmsPermission = onRequestSmsPermission,
+                onOpenApiSettings = onOpenApiSettings,
                 onSendSms = onSendSms
             )
             MessagingSubTab.OTP_VERIFY -> OtpVerifySection(
                 data = data,
+                simDiagnostics = simDiagnostics,
+                transportMode = transportMode,
+                twilioConfigured = twilioConfigured,
                 isBusy = isBusy,
                 lastOtpCheck = lastOtpCheck,
+                onRequestSmsPermission = onRequestSmsPermission,
+                onOpenApiSettings = onOpenApiSettings,
                 onSendOtp = onSendOtp,
                 onCheckOtp = onCheckOtp,
                 onRevokeOtp = onRevokeOtp,
@@ -159,19 +179,25 @@ fun MessagingVerifyScreen(
 @Composable
 private fun SendSmsSection(
     data: ConsoleDashboardData,
+    simDiagnostics: SimDiagnostics,
+    transportMode: SmsTransportMode,
+    twilioConfigured: Boolean,
     isBusy: Boolean,
     calculateSegments: (String) -> Int,
     estimatePrice: (Int, PlanTier, String) -> Double,
+    onRequestSmsPermission: () -> Unit,
+    onOpenApiSettings: () -> Unit,
     onSendSms: (to: String, from: String, body: String) -> Unit
 ) {
     val activeNumbers = data.phoneNumbers.filter { it.status == "ACTIVE" }
-    val defaultFrom = activeNumbers.firstOrNull { it.defaultSender }?.e164Number
+    val defaultFrom = activeNumbers.firstOrNull { it.countryCode == "PK" }?.e164Number
+        ?: activeNumbers.firstOrNull { it.defaultSender }?.e164Number
         ?: activeNumbers.firstOrNull()?.e164Number
-        ?: "+14158904321"
+        ?: "+923008904321"
 
     var selectedFrom by remember(defaultFrom) { mutableStateOf(defaultFrom) }
     var toNumber by remember { mutableStateOf("+923001234567") }
-    var body by remember { mutableStateOf("Hello from PulseRelay! Your direct global route is live.") }
+    var body by remember { mutableStateOf("Hello from PulseRelay! Your direct GSM SIM test message.") }
 
     val planTier = PlanTier.fromRaw(data.settings?.planTier)
     val carrier = remember(toNumber) { GlobalCountryCatalog.resolveDestination(toNumber) }
@@ -184,6 +210,19 @@ private fun SendSmsSection(
         horizontalAlignment = Alignment.CenterHorizontally,
         verticalArrangement = Arrangement.spacedBy(12.dp)
     ) {
+        item {
+            SimGatewayStatusBanner(
+                simDiagnostics = simDiagnostics,
+                transportMode = transportMode,
+                twilioConfigured = twilioConfigured,
+                onRequestSmsPermission = onRequestSmsPermission,
+                onOpenApiSettings = onOpenApiSettings,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .widthIn(max = 880.dp)
+            )
+        }
+
         item {
             Surface(
                 modifier = Modifier
@@ -246,9 +285,10 @@ private fun SendSmsSection(
                     OutlinedTextField(
                         value = toNumber,
                         onValueChange = { toNumber = it },
-                        label = { Text("Recipient E.164 Number") },
-                        placeholder = { Text("+14155550199") },
+                        label = { Text("Recipient Cell Phone (+92300..., +1...)") },
+                        placeholder = { Text("+923001234567") },
                         singleLine = true,
+                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Phone),
                         modifier = Modifier
                             .fillMaxWidth()
                             .testTag("sms_to_input")
@@ -319,7 +359,11 @@ private fun SendSmsSection(
                         )
                         Spacer(Modifier.width(8.dp))
                         Text(
-                            text = if (isBusy) "Dispatching..." else "Send Direct Global SMS",
+                            text = when {
+                                isBusy -> "Transmitting via ${transportMode.shortTag}..."
+                                transportMode == SmsTransportMode.GSM_SIM -> "Send Real GSM SIM SMS"
+                                else -> "Send SMS via Twilio Cloud"
+                            },
                             style = MaterialTheme.typography.labelLarge,
                             color = Color.White
                         )
@@ -382,8 +426,13 @@ private fun SendSmsSection(
 @Composable
 private fun OtpVerifySection(
     data: ConsoleDashboardData,
+    simDiagnostics: SimDiagnostics,
+    transportMode: SmsTransportMode,
+    twilioConfigured: Boolean,
     isBusy: Boolean,
     lastOtpCheck: OtpCheckResult?,
+    onRequestSmsPermission: () -> Unit,
+    onOpenApiSettings: () -> Unit,
     onSendOtp: (to: String, from: String, service: String, length: Int, channel: OtpChannel) -> Unit,
     onCheckOtp: (to: String, code: String) -> Unit,
     onRevokeOtp: (OtpVerificationRecord) -> Unit,
@@ -393,9 +442,9 @@ private fun OtpVerifySection(
     val defaultFrom = activeNumbers.firstOrNull { it.countryCode == "PK" }?.e164Number
         ?: activeNumbers.firstOrNull { it.defaultSender }?.e164Number
         ?: activeNumbers.firstOrNull()?.e164Number
-        ?: "+14158904321"
+        ?: "+923008904321"
 
-    var serviceName by remember { mutableStateOf("PulseAuth Global") }
+    var serviceName by remember { mutableStateOf("PulseAuth") }
     var otpRecipient by remember { mutableStateOf("+923001234567") }
     var codeLength by remember { mutableIntStateOf(6) }
     var channel by remember { mutableStateOf(OtpChannel.SMS) }
@@ -416,6 +465,19 @@ private fun OtpVerifySection(
         horizontalAlignment = Alignment.CenterHorizontally,
         verticalArrangement = Arrangement.spacedBy(12.dp)
     ) {
+        item {
+            SimGatewayStatusBanner(
+                simDiagnostics = simDiagnostics,
+                transportMode = transportMode,
+                twilioConfigured = twilioConfigured,
+                onRequestSmsPermission = onRequestSmsPermission,
+                onOpenApiSettings = onOpenApiSettings,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .widthIn(max = 880.dp)
+            )
+        }
+
         // 1. Dispatch OTP Challenge Card
         item {
             Surface(
@@ -439,7 +501,7 @@ private fun OtpVerifySection(
                         )
                         Spacer(Modifier.width(8.dp))
                         Text(
-                            text = "Generate & Send Global OTP",
+                            text = "Generate & Send Real OTP SMS",
                             style = MaterialTheme.typography.titleLarge,
                             color = MaterialTheme.colorScheme.onSurface
                         )
@@ -471,8 +533,9 @@ private fun OtpVerifySection(
                     OutlinedTextField(
                         value = otpRecipient,
                         onValueChange = { otpRecipient = it },
-                        label = { Text("Recipient E.164 Number (+92, +1, +44...)") },
+                        label = { Text("Recipient Cell Phone (+92, +1, +44...)") },
                         singleLine = true,
+                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Phone),
                         modifier = Modifier
                             .fillMaxWidth()
                             .testTag("otp_to_input")
@@ -765,9 +828,10 @@ private fun MessageLogsSection(messages: List<SmsMessageRecord>) {
     val filtered = remember(messages, searchQuery, filterMode) {
         messages.filter { msg ->
             val matchesFilter = when (filterMode) {
+                "SENT" -> msg.status == MessageStatus.SENT.name
                 "DELIVERED" -> msg.status == MessageStatus.DELIVERED.name
+                "FAILED" -> msg.status == MessageStatus.FAILED.name
                 "API" -> msg.direction == MessageDirection.OUTBOUND_API.name
-                "CONSOLE" -> msg.direction == MessageDirection.OUTBOUND_CONSOLE.name
                 else -> true
             }
             val q = searchQuery.trim().lowercase()
@@ -805,7 +869,7 @@ private fun MessageLogsSection(messages: List<SmsMessageRecord>) {
                     modifier = Modifier.horizontalScroll(rememberScrollState()),
                     horizontalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
-                    listOf("ALL", "DELIVERED", "API", "CONSOLE").forEach { mode ->
+                    listOf("ALL", "SENT", "DELIVERED", "FAILED", "API").forEach { mode ->
                         FilterChip(
                             selected = filterMode == mode,
                             onClick = { filterMode = mode },
@@ -883,6 +947,14 @@ private fun MessageLogsSection(messages: List<SmsMessageRecord>) {
                             maxLines = if (isExpanded) 10 else 2,
                             overflow = TextOverflow.Ellipsis
                         )
+
+                        if (!msg.errorMessage.isNullOrBlank()) {
+                            Text(
+                                text = "Reason: ${msg.errorMessage}",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = PulseCrimson
+                            )
+                        }
 
                         if (isExpanded) {
                             Box(

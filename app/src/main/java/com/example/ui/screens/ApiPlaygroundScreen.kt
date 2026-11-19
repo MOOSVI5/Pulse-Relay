@@ -20,13 +20,20 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.Api
+import androidx.compose.material.icons.rounded.ContentCopy
 import androidx.compose.material.icons.rounded.PlayArrow
+import androidx.compose.material.icons.rounded.Refresh
 import androidx.compose.material.icons.rounded.Save
+import androidx.compose.material.icons.rounded.SimCard
+import androidx.compose.material.icons.rounded.Wifi
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.FilterChip
+import androidx.compose.material3.FilterChipDefaults
 import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.SegmentedButton
 import androidx.compose.material3.SegmentedButtonDefaults
@@ -42,15 +49,24 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.PasswordVisualTransformation
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.example.data.model.ApiRequestLog
 import com.example.data.model.GitHubIntegrationRecord
 import com.example.data.model.GitHubTriggerMode
 import com.example.data.model.PlanTier
+import com.example.engine.GitHubReleaseInfo
 import com.example.engine.GitHubRepoSummary
+import com.example.engine.SimDiagnostics
+import com.example.engine.SmsTransportMode
+import com.example.engine.TwilioGatewayConfig
 import com.example.ui.components.MonoCodeBlock
+import com.example.ui.components.SimGatewayStatusBanner
 import com.example.ui.components.StatusPill
 import com.example.ui.theme.JetBrainsMonoFont
 import com.example.ui.theme.PulseCrimson
@@ -82,14 +98,24 @@ fun ApiPlaygroundScreen(
     data: ConsoleDashboardData,
     userUid: String,
     userEmail: String?,
+    simDiagnostics: SimDiagnostics,
+    transportMode: SmsTransportMode,
+    twilioConfig: TwilioGatewayConfig,
     isServerRunning: Boolean,
     serverPort: Int,
+    lanBindEnabled: Boolean,
+    lanIpAddresses: List<String>,
     isBusy: Boolean,
     lastApiResult: ApiExecutionResult?,
     requestLogs: List<ApiRequestLog>,
     firebaseLatencyMs: Long?,
     fetchedRepos: List<GitHubRepoSummary>,
-    latestRelease: com.example.engine.GitHubReleaseInfo?,
+    latestRelease: GitHubReleaseInfo?,
+    onRequestSmsPermission: () -> Unit,
+    onSelectTransportMode: (SmsTransportMode) -> Unit,
+    onSaveTwilioConfig: (sid: String, token: String, fromNumber: String) -> Unit,
+    onToggleLanBind: (Boolean) -> Unit,
+    onRefreshLanIps: () -> Unit,
     onToggleServer: (Boolean) -> Unit,
     onSavePlanSettings: (PlanTier, Boolean, String) -> Unit,
     onExecuteHttpRequest: (method: String, path: String, bearerSecret: String, jsonBody: String) -> Unit,
@@ -134,11 +160,21 @@ fun ApiPlaygroundScreen(
         when (activeSubTab) {
             ApiScreenSubTab.LIVE_API -> LiveApiRunnerContent(
                 data = data,
+                simDiagnostics = simDiagnostics,
+                transportMode = transportMode,
+                twilioConfig = twilioConfig,
                 isServerRunning = isServerRunning,
                 serverPort = serverPort,
+                lanBindEnabled = lanBindEnabled,
+                lanIpAddresses = lanIpAddresses,
                 isBusy = isBusy,
                 lastApiResult = lastApiResult,
                 requestLogs = requestLogs,
+                onRequestSmsPermission = onRequestSmsPermission,
+                onSelectTransportMode = onSelectTransportMode,
+                onSaveTwilioConfig = onSaveTwilioConfig,
+                onToggleLanBind = onToggleLanBind,
+                onRefreshLanIps = onRefreshLanIps,
                 onToggleServer = onToggleServer,
                 onSavePlanSettings = onSavePlanSettings,
                 onExecuteHttpRequest = onExecuteHttpRequest,
@@ -170,29 +206,45 @@ fun ApiPlaygroundScreen(
 @Composable
 private fun LiveApiRunnerContent(
     data: ConsoleDashboardData,
+    simDiagnostics: SimDiagnostics,
+    transportMode: SmsTransportMode,
+    twilioConfig: TwilioGatewayConfig,
     isServerRunning: Boolean,
     serverPort: Int,
+    lanBindEnabled: Boolean,
+    lanIpAddresses: List<String>,
     isBusy: Boolean,
     lastApiResult: ApiExecutionResult?,
     requestLogs: List<ApiRequestLog>,
+    onRequestSmsPermission: () -> Unit,
+    onSelectTransportMode: (SmsTransportMode) -> Unit,
+    onSaveTwilioConfig: (sid: String, token: String, fromNumber: String) -> Unit,
+    onToggleLanBind: (Boolean) -> Unit,
+    onRefreshLanIps: () -> Unit,
     onToggleServer: (Boolean) -> Unit,
     onSavePlanSettings: (PlanTier, Boolean, String) -> Unit,
     onExecuteHttpRequest: (method: String, path: String, bearerSecret: String, jsonBody: String) -> Unit,
     onCopied: (String) -> Unit
 ) {
+    val clipboard = LocalClipboardManager.current
     val activeKeys = data.apiKeys.filter { it.active }
     val defaultKey = activeKeys.firstOrNull()?.secretKey
         ?: data.apiKeys.firstOrNull()?.secretKey
         ?: "pr_live_demo_key"
-    val defaultFrom = data.phoneNumbers.firstOrNull { it.defaultSender }?.e164Number
+    val defaultFrom = data.phoneNumbers.firstOrNull { it.countryCode == "PK" }?.e164Number
+        ?: data.phoneNumbers.firstOrNull { it.defaultSender }?.e164Number
         ?: data.phoneNumbers.firstOrNull()?.e164Number
-        ?: "+14158904321"
+        ?: "+923008904321"
 
     var selectedPreset by remember { mutableStateOf(ApiEndpointPreset.SEND_SMS) }
     var selectedBearer by remember(defaultKey) { mutableStateOf(defaultKey) }
     var requestJson by remember(selectedPreset, defaultFrom) {
         mutableStateOf(defaultJsonFor(selectedPreset, defaultFrom))
     }
+
+    var twilioSid by remember(twilioConfig.accountSid) { mutableStateOf(twilioConfig.accountSid) }
+    var twilioToken by remember(twilioConfig.authToken) { mutableStateOf(twilioConfig.authToken) }
+    var twilioFrom by remember(twilioConfig.fromNumber) { mutableStateOf(twilioConfig.fromNumber) }
 
     val currentPlan = PlanTier.fromRaw(data.settings?.planTier)
     var planTier by remember(currentPlan) { mutableStateOf(currentPlan) }
@@ -203,12 +255,235 @@ private fun LiveApiRunnerContent(
         mutableStateOf(data.settings?.defaultWebhookUrl.orEmpty())
     }
 
+    val primaryLanIp = if (lanBindEnabled) lanIpAddresses.firstOrNull() else null
+    val externalBaseUrl = primaryLanIp?.let { "http://$it:$serverPort" } ?: "http://127.0.0.1:$serverPort"
+
     LazyColumn(
         modifier = Modifier.fillMaxSize(),
         contentPadding = PaddingValues(horizontal = 16.dp, vertical = 10.dp),
         horizontalAlignment = Alignment.CenterHorizontally,
         verticalArrangement = Arrangement.spacedBy(14.dp)
     ) {
+        // 1. Live Endpoints, LAN Wi-Fi Access & API Key Copy Card
+        item {
+            Surface(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .widthIn(max = 880.dp),
+                color = MaterialTheme.colorScheme.surfaceContainer,
+                shape = RoundedCornerShape(18.dp),
+                border = BorderStroke(1.dp, TelemetryCyan.copy(alpha = 0.55f))
+            ) {
+                Column(
+                    modifier = Modifier.padding(16.dp),
+                    verticalArrangement = Arrangement.spacedBy(10.dp)
+                ) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.weight(1f)) {
+                            Icon(Icons.Rounded.Api, contentDescription = null, tint = TelemetryCyan)
+                            Spacer(Modifier.width(8.dp))
+                            Column {
+                                Text(
+                                    text = "REST API Gateway Endpoints",
+                                    style = MaterialTheme.typography.titleLarge
+                                )
+                                StatusPill(
+                                    text = if (isServerRunning) "SERVER LIVE ON :$serverPort" else "SERVER PAUSED",
+                                    color = if (isServerRunning) SignalEmerald else WarningAmber
+                                )
+                            }
+                        }
+                        Switch(
+                            checked = isServerRunning,
+                            onCheckedChange = onToggleServer,
+                            modifier = Modifier.testTag("api_server_switch")
+                        )
+                    }
+
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.weight(1f)) {
+                            Icon(Icons.Rounded.Wifi, contentDescription = null, tint = SignalEmerald, modifier = Modifier.size(18.dp))
+                            Spacer(Modifier.width(8.dp))
+                            Column {
+                                Text("Allow Wi-Fi / LAN Devices", style = MaterialTheme.typography.bodyMedium)
+                                Text(
+                                    text = if (lanBindEnabled) "Listening on 0.0.0.0:$serverPort (external apps & PCs)" else "Localhost 127.0.0.1:$serverPort only",
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            }
+                        }
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            IconButton(onClick = onRefreshLanIps) {
+                                Icon(Icons.Rounded.Refresh, contentDescription = "Refresh IP addresses", tint = TelemetryCyan)
+                            }
+                            Switch(
+                                checked = lanBindEnabled,
+                                onCheckedChange = onToggleLanBind,
+                                modifier = Modifier.testTag("api_lan_bind_switch")
+                            )
+                        }
+                    }
+
+                    Surface(
+                        color = Color(0xFF060A13),
+                        shape = RoundedCornerShape(12.dp),
+                        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline)
+                    ) {
+                        Column(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(12.dp),
+                            verticalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Column(modifier = Modifier.weight(1f)) {
+                                    Text("BASE URL (WI-FI / LAN)", style = MaterialTheme.typography.labelSmall, color = SignalEmerald)
+                                    Text(
+                                        text = primaryLanIp?.let { "http://$it:$serverPort/v1" } ?: "No Wi-Fi IP detected (use 127.0.0.1)",
+                                        style = MaterialTheme.typography.labelLarge.copy(fontFamily = JetBrainsMonoFont),
+                                        color = Color.White,
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis
+                                    )
+                                }
+                                OutlinedButton(
+                                    onClick = {
+                                        val url = "$externalBaseUrl/v1"
+                                        clipboard.setText(AnnotatedString(url))
+                                        onCopied("Copied API URL: $url")
+                                    },
+                                    contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp)
+                                ) {
+                                    Icon(Icons.Rounded.ContentCopy, contentDescription = "Copy API Base URL", modifier = Modifier.size(14.dp))
+                                    Spacer(Modifier.width(4.dp))
+                                    Text("Copy", style = MaterialTheme.typography.labelSmall)
+                                }
+                            }
+
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Column(modifier = Modifier.weight(1f)) {
+                                    Text("BEARER API KEY", style = MaterialTheme.typography.labelSmall, color = TelemetryCyan)
+                                    Text(
+                                        text = selectedBearer,
+                                        style = MaterialTheme.typography.labelSmall.copy(fontFamily = JetBrainsMonoFont),
+                                        color = Color(0xFFE2E8F0),
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis
+                                    )
+                                }
+                                OutlinedButton(
+                                    onClick = {
+                                        clipboard.setText(AnnotatedString(selectedBearer))
+                                        onCopied("Bearer API key copied")
+                                    },
+                                    contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp)
+                                ) {
+                                    Icon(Icons.Rounded.ContentCopy, contentDescription = "Copy API Key", modifier = Modifier.size(14.dp))
+                                    Spacer(Modifier.width(4.dp))
+                                    Text("Copy Key", style = MaterialTheme.typography.labelSmall)
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // 2. Real SMS Transport Mode Card (Phone GSM SIM vs Twilio Cloud)
+        item {
+            Surface(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .widthIn(max = 880.dp),
+                color = MaterialTheme.colorScheme.surfaceContainer,
+                shape = RoundedCornerShape(18.dp),
+                border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline)
+            ) {
+                Column(
+                    modifier = Modifier.padding(16.dp),
+                    verticalArrangement = Arrangement.spacedBy(10.dp)
+                ) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Icon(Icons.Rounded.SimCard, contentDescription = null, tint = SignalEmerald)
+                        Spacer(Modifier.width(8.dp))
+                        Text("SMS Carrier Transport", style = MaterialTheme.typography.titleMedium)
+                    }
+
+                    SimGatewayStatusBanner(
+                        simDiagnostics = simDiagnostics,
+                        transportMode = transportMode,
+                        twilioConfigured = twilioConfig.isConfigured(),
+                        onRequestSmsPermission = onRequestSmsPermission
+                    )
+
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        SmsTransportMode.entries.forEach { mode ->
+                            FilterChip(
+                                selected = transportMode == mode,
+                                onClick = { onSelectTransportMode(mode) },
+                                label = { Text(mode.label, maxLines = 1) },
+                                colors = FilterChipDefaults.filterChipColors(
+                                    selectedContainerColor = SignalEmerald.copy(alpha = 0.18f),
+                                    selectedLabelColor = SignalEmerald
+                                ),
+                                modifier = Modifier.testTag("transport_${mode.name.lowercase()}")
+                            )
+                        }
+                    }
+
+                    if (transportMode == SmsTransportMode.TWILIO_CLOUD) {
+                        OutlinedTextField(
+                            value = twilioSid,
+                            onValueChange = { twilioSid = it },
+                            label = { Text("Twilio Account SID (AC...)") },
+                            singleLine = true,
+                            modifier = Modifier.fillMaxWidth()
+                        )
+                        OutlinedTextField(
+                            value = twilioToken,
+                            onValueChange = { twilioToken = it },
+                            label = { Text("Twilio Auth Token") },
+                            singleLine = true,
+                            visualTransformation = PasswordVisualTransformation(),
+                            modifier = Modifier.fillMaxWidth()
+                        )
+                        OutlinedTextField(
+                            value = twilioFrom,
+                            onValueChange = { twilioFrom = it },
+                            label = { Text("Twilio From Number (+1...)") },
+                            singleLine = true,
+                            modifier = Modifier.fillMaxWidth()
+                        )
+                        Button(
+                            onClick = { onSaveTwilioConfig(twilioSid, twilioToken, twilioFrom) },
+                            shape = RoundedCornerShape(10.dp),
+                            modifier = Modifier.align(Alignment.End)
+                        ) {
+                            Text("Apply Twilio Gateway")
+                        }
+                    }
+                }
+            }
+        }
+
+        // 3. Interactive HTTP Endpoint Runner
         item {
             Surface(
                 modifier = Modifier
@@ -222,31 +497,7 @@ private fun LiveApiRunnerContent(
                     modifier = Modifier.padding(16.dp),
                     verticalArrangement = Arrangement.spacedBy(12.dp)
                 ) {
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        Row(verticalAlignment = Alignment.CenterVertically) {
-                            Icon(Icons.Rounded.Api, contentDescription = null, tint = TelemetryCyan)
-                            Spacer(Modifier.width(8.dp))
-                            Column {
-                                Text(
-                                    text = "Live REST API Playground",
-                                    style = MaterialTheme.typography.titleLarge
-                                )
-                                Text(
-                                    text = "http://127.0.0.1:$serverPort",
-                                    style = MaterialTheme.typography.labelSmall,
-                                    color = TelemetryCyan
-                                )
-                            }
-                        }
-                        Switch(
-                            checked = isServerRunning,
-                            onCheckedChange = onToggleServer
-                        )
-                    }
+                    Text("Test HTTP Endpoint Live", style = MaterialTheme.typography.titleMedium)
 
                     Row(
                         modifier = Modifier.horizontalScroll(rememberScrollState()),
@@ -316,7 +567,7 @@ private fun LiveApiRunnerContent(
                         Icon(Icons.Rounded.PlayArrow, contentDescription = null, tint = Color.White)
                         Spacer(Modifier.width(6.dp))
                         Text(
-                            text = if (isBusy) "Calling HTTP Endpoint..." else "Execute Real HTTP ${selectedPreset.method}",
+                            text = if (isBusy) "Dispatching HTTP + ${transportMode.shortTag}..." else "Execute Real HTTP ${selectedPreset.method}",
                             color = Color.White
                         )
                     }
@@ -357,28 +608,30 @@ private fun LiveApiRunnerContent(
             }
         }
 
+        // 4. Ready-to-run cURL (Uses LAN IP when Wi-Fi LAN is available)
         item {
             val curl = if (selectedPreset.method == "POST") {
                 """
-curl -X POST http://127.0.0.1:$serverPort${selectedPreset.path} \
+curl -X POST $externalBaseUrl${selectedPreset.path} \
   -H "Authorization: Bearer $selectedBearer" \
   -H "Content-Type: application/json" \
   -d '${requestJson.replace("\n", "").replace("  ", "")}'
                 """.trimIndent()
             } else {
                 """
-curl -X GET http://127.0.0.1:$serverPort${selectedPreset.path} \
+curl -X GET $externalBaseUrl${selectedPreset.path} \
   -H "Authorization: Bearer $selectedBearer"
                 """.trimIndent()
             }
             MonoCodeBlock(
-                title = "READY-TO-RUN CURL",
+                title = "READY-TO-RUN CURL (${if (primaryLanIp != null) "WI-FI LAN" else "LOCALHOST"})",
                 code = curl,
                 onCopied = { onCopied("cURL command copied") },
                 modifier = Modifier.widthIn(max = 880.dp)
             )
         }
 
+        // 5. Plan & Global Routing
         item {
             Surface(
                 modifier = Modifier
@@ -392,7 +645,7 @@ curl -X GET http://127.0.0.1:$serverPort${selectedPreset.path} \
                     modifier = Modifier.padding(16.dp),
                     verticalArrangement = Arrangement.spacedBy(10.dp)
                 ) {
-                    Text("Plan & Global Routing", style = MaterialTheme.typography.titleMedium)
+                    Text("Plan & Webhook Routing", style = MaterialTheme.typography.titleMedium)
 
                     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                         PlanTier.entries.forEach { tier ->
@@ -410,9 +663,9 @@ curl -X GET http://127.0.0.1:$serverPort${selectedPreset.path} \
                         verticalAlignment = Alignment.CenterVertically
                     ) {
                         Column(modifier = Modifier.weight(1f)) {
-                            Text("Direct Tier-1 Carrier Routing", style = MaterialTheme.typography.bodyLarge)
+                            Text("Direct Carrier Routing", style = MaterialTheme.typography.bodyLarge)
                             Text(
-                                "Bypass aggregator hops for fastest OTP delivery",
+                                "Send immediately through active gateway",
                                 style = MaterialTheme.typography.bodyMedium,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant
                             )
@@ -464,7 +717,7 @@ curl -X GET http://127.0.0.1:$serverPort${selectedPreset.path} \
                     shape = RoundedCornerShape(14.dp)
                 ) {
                     Text(
-                        text = "No HTTP requests received yet. Tap Execute above or curl 127.0.0.1:$serverPort/v1/health.",
+                        text = "No HTTP requests received yet. Tap Execute above or call $externalBaseUrl/v1/health.",
                         modifier = Modifier.padding(16.dp),
                         style = MaterialTheme.typography.bodyMedium,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
@@ -518,17 +771,17 @@ curl -X GET http://127.0.0.1:$serverPort${selectedPreset.path} \
 private fun defaultJsonFor(preset: ApiEndpointPreset, defaultFrom: String): String = when (preset) {
     ApiEndpointPreset.SEND_SMS -> """
 {
-  "to": "+447700900412",
+  "to": "+923001234567",
   "from": "$defaultFrom",
-  "body": "Live API test from PulseRelay!"
+  "body": "Live GSM SIM SMS test from PulseRelay!"
 }
     """.trimIndent()
 
     ApiEndpointPreset.SEND_OTP -> """
 {
-  "to": "+447700900412",
+  "to": "+923001234567",
   "from": "$defaultFrom",
-  "service": "PulseAuth Web",
+  "service": "PulseAuth",
   "length": 6,
   "ttl_seconds": 300
 }
@@ -536,7 +789,7 @@ private fun defaultJsonFor(preset: ApiEndpointPreset, defaultFrom: String): Stri
 
     ApiEndpointPreset.CHECK_OTP -> """
 {
-  "to": "+447700900412",
+  "to": "+923001234567",
   "code": "492817"
 }
     """.trimIndent()

@@ -24,7 +24,9 @@ import org.json.JSONObject
 import java.io.BufferedReader
 import java.io.InputStreamReader
 import java.io.OutputStream
+import java.net.Inet4Address
 import java.net.InetAddress
+import java.net.NetworkInterface
 import java.net.ServerSocket
 import java.net.Socket
 import java.nio.charset.StandardCharsets
@@ -42,6 +44,12 @@ class PulseApiServer(
     private val _port = MutableStateFlow(8765)
     val port: StateFlow<Int> = _port.asStateFlow()
 
+    private val _lanBindEnabled = MutableStateFlow(true)
+    val lanBindEnabled: StateFlow<Boolean> = _lanBindEnabled.asStateFlow()
+
+    private val _lanIpAddresses = MutableStateFlow<List<String>>(emptyList())
+    val lanIpAddresses: StateFlow<List<String>> = _lanIpAddresses.asStateFlow()
+
     private val _requestLogs = MutableStateFlow<List<ApiRequestLog>>(emptyList())
     val requestLogs: StateFlow<List<ApiRequestLog>> = _requestLogs.asStateFlow()
 
@@ -55,6 +63,12 @@ class PulseApiServer(
     private var currentMessages: List<SmsMessageRecord> = emptyList()
     @Volatile
     private var currentOtps: List<OtpVerificationRecord> = emptyList()
+    @Volatile
+    private var currentTransportMode: SmsTransportMode = SmsTransportMode.GSM_SIM
+    @Volatile
+    private var currentTwilioConfig: TwilioGatewayConfig = TwilioGatewayConfig()
+    @Volatile
+    private var currentOtpServiceEnabled: Boolean = true
 
     fun syncSnapshot(
         settings: AccountSettings?,
@@ -70,11 +84,40 @@ class PulseApiServer(
         currentOtps = otps
     }
 
-    fun start(desiredPort: Int = 8765) {
+    fun syncTransport(
+        transportMode: SmsTransportMode,
+        twilioConfig: TwilioGatewayConfig,
+        otpServiceEnabled: Boolean
+    ) {
+        currentTransportMode = transportMode
+        currentTwilioConfig = twilioConfig
+        currentOtpServiceEnabled = otpServiceEnabled
+    }
+
+    fun refreshNetworkAddresses() {
+        _lanIpAddresses.value = detectLocalIpv4Addresses()
+    }
+
+    fun setLanBindEnabled(enabled: Boolean) {
+        val changed = _lanBindEnabled.value != enabled
+        _lanBindEnabled.value = enabled
+        if (changed && _isRunning.value) {
+            val activePort = _port.value
+            stop()
+            start(activePort, enabled)
+        } else {
+            refreshNetworkAddresses()
+        }
+    }
+
+    fun start(desiredPort: Int = 8765, bindLan: Boolean = _lanBindEnabled.value) {
         if (_isRunning.value) return
+        _lanBindEnabled.value = bindLan
+        refreshNetworkAddresses()
         acceptJob = scope.launch(Dispatchers.IO) {
             try {
-                val socket = ServerSocket(desiredPort, 32, InetAddress.getByName("127.0.0.1"))
+                val bindHost = InetAddress.getByName(if (bindLan) "0.0.0.0" else "127.0.0.1")
+                val socket = ServerSocket(desiredPort, 32, bindHost)
                 serverSocket = socket
                 _port.value = desiredPort
                 _isRunning.value = true
@@ -109,7 +152,7 @@ class PulseApiServer(
     private suspend fun handleClient(client: Socket) {
         val startNs = System.nanoTime()
         client.use { sock ->
-            sock.soTimeout = 5000
+            sock.soTimeout = 30000
             val reader = BufferedReader(InputStreamReader(sock.getInputStream(), StandardCharsets.UTF_8))
             val out = sock.getOutputStream()
 
@@ -132,6 +175,11 @@ class PulseApiServer(
                 line = reader.readLine()
             }
 
+            if (method == "OPTIONS") {
+                writeResponse(out, 200, "{}")
+                return
+            }
+
             val contentLength = headers["content-length"]?.toIntOrNull()?.coerceIn(0, 65536) ?: 0
             val requestBody = if (contentLength > 0) {
                 val buf = CharArray(contentLength)
@@ -146,13 +194,29 @@ class PulseApiServer(
                 ""
             }
 
-            if (method == "GET" && path == "/v1/health") {
+            if (method == "GET" && (path == "/" || path == "/v1" || path == "/v1/routes" || path == "/v1/health")) {
+                val simDiag = sendingEngine.simDiagnostics()
+                val lanArr = JSONArray().apply {
+                    _lanIpAddresses.value.forEach { ip -> put("http://$ip:${_port.value}/v1") }
+                }
                 val json = JSONObject().apply {
                     put("status", "operational")
-                    put("engine", "PulseRelay-Core/1.0")
+                    put("engine", "PulseRelay-Gateway/2.0")
                     put("port", _port.value)
-                    put("active_numbers", currentNumbers.count { it.status == "ACTIVE" })
-                    put("unlimited_texts", currentSettings?.unlimitedTexts ?: true)
+                    put("lan_bind", _lanBindEnabled.value)
+                    put("transport_mode", currentTransportMode.name)
+                    put("sim_ready", simDiag.simReady && simDiag.hasSendSmsPermission)
+                    put("sim_carrier", simDiag.carrierName)
+                    put("otp_service_enabled", currentOtpServiceEnabled)
+                    put("lan_base_urls", lanArr)
+                    put("endpoints", JSONArray(listOf(
+                        "GET /v1/health",
+                        "GET /v1/numbers",
+                        "GET /v1/messages",
+                        "POST /v1/messages",
+                        "POST /v1/verify/send",
+                        "POST /v1/verify/check"
+                    )))
                 }.toString(2)
                 writeAndLog(out, method, path, 200, "public", requestBody, json, startNs)
                 return
@@ -200,6 +264,9 @@ class PulseApiServer(
                                 put("status", msg.status.lowercase())
                                 put("segments", msg.segments)
                                 put("price_usd", msg.priceUsd)
+                                if (!msg.errorMessage.isNullOrBlank()) {
+                                    put("error", msg.errorMessage)
+                                }
                             }
                         )
                     }
@@ -226,7 +293,9 @@ class PulseApiServer(
                         apiKeyLabel = matchedKey.label,
                         settings = currentSettings,
                         ownedNumbers = currentNumbers,
-                        apiKeyId = matchedKey.id
+                        apiKeyId = matchedKey.id,
+                        transportMode = currentTransportMode,
+                        twilioConfig = currentTwilioConfig
                     )
 
                     if (sendRes.isSuccess) {
@@ -234,25 +303,34 @@ class PulseApiServer(
                         val res = JSONObject().apply {
                             put("sid", rec.sid)
                             put("status", rec.status.lowercase())
+                            put("transport", currentTransportMode.shortTag)
                             put("to", rec.toNumber)
                             put("from", rec.fromNumber)
                             put("country", rec.countryCode)
                             put("carrier", rec.carrierName)
                             put("segments", rec.segments)
                             put("price_usd", rec.priceUsd)
-                            put("unlimited_plan", currentSettings?.unlimitedTexts ?: true)
                         }.toString(2)
                         writeAndLog(out, method, path, 201, matchedKey.label, requestBody, res, startNs)
                     } else {
+                        val errMsg = sendRes.exceptionOrNull()?.message ?: "SMS dispatch failed"
                         val err = JSONObject()
-                            .put("error", "validation_error")
-                            .put("message", sendRes.exceptionOrNull()?.message ?: "Send failed")
+                            .put("error", "sms_dispatch_failed")
+                            .put("message", errMsg)
                             .toString(2)
-                        writeAndLog(out, method, path, 400, matchedKey.label, requestBody, err, startNs)
+                        writeAndLog(out, method, path, 422, matchedKey.label, requestBody, err, startNs)
                     }
                 }
 
                 method == "POST" && path == "/v1/verify/send" -> {
+                    if (!currentOtpServiceEnabled) {
+                        val err = JSONObject()
+                            .put("error", "service_paused")
+                            .put("message", "OTP SMS service is currently paused by Admin.")
+                            .toString(2)
+                        writeAndLog(out, method, path, 503, matchedKey.label, requestBody, err, startNs)
+                        return
+                    }
                     val json = runCatching { JSONObject(requestBody) }.getOrNull()
                     if (json == null) {
                         val err = JSONObject().put("error", "invalid_json").toString(2)
@@ -261,7 +339,7 @@ class PulseApiServer(
                     }
                     val to = json.optString("to", "")
                     val from = json.optString("from", "")
-                    val service = json.optString("service", "PulseAuth Global")
+                    val service = json.optString("service", "PulseAuth")
                     val length = json.optInt("length", 6)
                     val ttl = json.optInt("ttl_seconds", 300)
 
@@ -276,7 +354,9 @@ class PulseApiServer(
                         apiKeyLabel = matchedKey.label,
                         settings = currentSettings,
                         ownedNumbers = currentNumbers,
-                        apiKeyId = matchedKey.id
+                        apiKeyId = matchedKey.id,
+                        transportMode = currentTransportMode,
+                        twilioConfig = currentTwilioConfig
                     )
 
                     if (otpRes.isSuccess) {
@@ -287,16 +367,17 @@ class PulseApiServer(
                             put("from", otp.fromNumber)
                             put("service", otp.serviceName)
                             put("channel", otp.channel.lowercase())
+                            put("transport", currentTransportMode.shortTag)
                             put("status", otp.status.lowercase())
                             put("expires_at_ms", otp.expiresAtMillis)
                         }.toString(2)
                         writeAndLog(out, method, path, 201, matchedKey.label, requestBody, res, startNs)
                     } else {
                         val err = JSONObject()
-                            .put("error", "validation_error")
+                            .put("error", "otp_dispatch_failed")
                             .put("message", otpRes.exceptionOrNull()?.message ?: "OTP dispatch failed")
                             .toString(2)
-                        writeAndLog(out, method, path, 400, matchedKey.label, requestBody, err, startNs)
+                        writeAndLog(out, method, path, 422, matchedKey.label, requestBody, err, startNs)
                     }
                 }
 
@@ -329,7 +410,7 @@ class PulseApiServer(
                 else -> {
                     val err = JSONObject()
                         .put("error", "not_found")
-                        .put("message", "Unknown route $method $path")
+                        .put("message", "Unknown route $method $path. Try GET /v1/health or POST /v1/messages")
                         .toString(2)
                     writeAndLog(out, method, path, 404, matchedKey.label, requestBody, err, startNs)
                 }
@@ -386,6 +467,8 @@ class PulseApiServer(
             400 -> "Bad Request"
             401 -> "Unauthorized"
             404 -> "Not Found"
+            422 -> "Unprocessable Entity"
+            503 -> "Service Unavailable"
             else -> "Internal Server Error"
         }
         val bodyBytes = body.toByteArray(StandardCharsets.UTF_8)
@@ -394,10 +477,34 @@ class PulseApiServer(
             append("Content-Type: application/json; charset=utf-8\r\n")
             append("Content-Length: ${bodyBytes.size}\r\n")
             append("Access-Control-Allow-Origin: *\r\n")
+            append("Access-Control-Allow-Headers: Authorization, Content-Type\r\n")
+            append("Access-Control-Allow-Methods: GET, POST, OPTIONS\r\n")
             append("Connection: close\r\n\r\n")
         }
         out.write(headers.toByteArray(StandardCharsets.UTF_8))
         out.write(bodyBytes)
         out.flush()
+    }
+
+    private fun detectLocalIpv4Addresses(): List<String> {
+        return runCatching {
+            val found = mutableListOf<String>()
+            val interfaces = NetworkInterface.getNetworkInterfaces() ?: return emptyList()
+            while (interfaces.hasMoreElements()) {
+                val iface = interfaces.nextElement()
+                if (!iface.isUp || iface.isLoopback) continue
+                val addrs = iface.inetAddresses
+                while (addrs.hasMoreElements()) {
+                    val addr = addrs.nextElement()
+                    if (addr is Inet4Address && !addr.isLoopbackAddress) {
+                        val ip = addr.hostAddress.orEmpty()
+                        if (ip.isNotBlank() && !ip.startsWith("127.")) {
+                            found.add(ip)
+                        }
+                    }
+                }
+            }
+            found.distinct()
+        }.getOrDefault(emptyList())
     }
 }

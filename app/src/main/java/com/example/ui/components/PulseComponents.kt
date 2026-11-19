@@ -14,6 +14,7 @@ import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
@@ -27,9 +28,12 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.ContentCopy
+import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -45,16 +49,20 @@ import androidx.compose.ui.graphics.PathEffect
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.platform.LocalClipboardManager
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.example.engine.SimDiagnostics
+import com.example.engine.SmsTransportMode
 import com.example.ui.theme.JetBrainsMonoFont
 import com.example.ui.theme.PulseCrimson
 import com.example.ui.theme.SignalEmerald
 import com.example.ui.theme.TelemetryCyan
+import com.example.ui.theme.WarningAmber
 import kotlin.math.PI
 import kotlin.math.sin
 
@@ -543,4 +551,94 @@ fun KpiMetricTile(
 
 fun waveOffset(index: Int, phase: Float): Float {
     return sin((phase * 2f * PI + index * 0.6f).toDouble()).toFloat()
+}
+
+@Composable
+fun SimGatewayStatusBanner(
+    simDiagnostics: SimDiagnostics,
+    transportMode: SmsTransportMode,
+    twilioConfigured: Boolean,
+    onRequestSmsPermission: () -> Unit,
+    onOpenApiSettings: (() -> Unit)? = null,
+    modifier: Modifier = Modifier
+) {
+    val isReady = when (transportMode) {
+        SmsTransportMode.GSM_SIM ->
+            simDiagnostics.hasTelephony && simDiagnostics.hasSendSmsPermission && simDiagnostics.simReady
+        SmsTransportMode.TWILIO_CLOUD -> twilioConfigured
+    }
+    val accent = when {
+        isReady -> SignalEmerald
+        !simDiagnostics.hasSendSmsPermission && transportMode == SmsTransportMode.GSM_SIM -> WarningAmber
+        else -> PulseCrimson
+    }
+
+    Surface(
+        modifier = modifier.fillMaxWidth(),
+        color = accent.copy(alpha = 0.08f),
+        shape = RoundedCornerShape(14.dp),
+        border = BorderStroke(1.dp, accent.copy(alpha = 0.45f))
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 12.dp, vertical = 10.dp),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Column(
+                modifier = Modifier.weight(1f),
+                verticalArrangement = Arrangement.spacedBy(2.dp)
+            ) {
+                Text(
+                    text = if (transportMode == SmsTransportMode.GSM_SIM) {
+                        "REAL GSM SIM GATEWAY · ${simDiagnostics.carrierName.uppercase()}"
+                    } else {
+                        "TWILIO CLOUD SMS GATEWAY"
+                    },
+                    style = MaterialTheme.typography.labelSmall,
+                    color = accent,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+                Text(
+                    text = if (transportMode == SmsTransportMode.GSM_SIM) {
+                        simDiagnostics.detailLabel
+                    } else if (twilioConfigured) {
+                        "Twilio REST credentials active -> delivering globally"
+                    } else {
+                        "Enter Twilio SID, Auth Token & From number in API tab"
+                    },
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurface
+                )
+            }
+
+            if (transportMode == SmsTransportMode.GSM_SIM && !simDiagnostics.hasSendSmsPermission) {
+                Spacer(Modifier.width(8.dp))
+                Button(
+                    onClick = onRequestSmsPermission,
+                    colors = ButtonDefaults.buttonColors(containerColor = accent),
+                    shape = RoundedCornerShape(10.dp),
+                    contentPadding = PaddingValues(horizontal = 12.dp, vertical = 8.dp),
+                    modifier = Modifier.testTag("grant_sim_sms_button")
+                ) {
+                    Text(
+                        text = "Allow SIM SMS",
+                        style = MaterialTheme.typography.labelMedium,
+                        color = Color(0xFF070B14)
+                    )
+                }
+            } else if (onOpenApiSettings != null) {
+                Spacer(Modifier.width(8.dp))
+                OutlinedButton(
+                    onClick = onOpenApiSettings,
+                    shape = RoundedCornerShape(10.dp),
+                    contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp)
+                ) {
+                    Text("API & SIM", style = MaterialTheme.typography.labelSmall)
+                }
+            }
+        }
+    }
 }

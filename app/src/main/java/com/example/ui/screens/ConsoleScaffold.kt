@@ -1,5 +1,8 @@
 package com.example.ui.screens
 
+import android.Manifest
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
@@ -43,6 +46,7 @@ import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -58,9 +62,13 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.credentials.CredentialManager
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
+import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.example.data.firebase.signOutUser
 import com.example.data.model.TeamRole
+import com.example.engine.SmsTransportMode
 import com.example.ui.components.PulseBrandMark
 import com.example.ui.theme.PulseCrimson
 import com.example.ui.theme.SignalEmerald
@@ -86,12 +94,15 @@ fun ConsoleScaffold(
     onShowPublicSite: () -> Unit
 ) {
     val context = LocalContext.current
+    val lifecycleOwner = LocalLifecycleOwner.current
     val scope = rememberCoroutineScope()
     val credentialManager = remember(context) { CredentialManager.create(context) }
 
     val dashboardState by viewModel.dashboardState.collectAsStateWithLifecycle()
     val isServerRunning by viewModel.isServerRunning.collectAsStateWithLifecycle()
     val serverPort by viewModel.serverPort.collectAsStateWithLifecycle()
+    val lanBindEnabled by viewModel.lanBindEnabled.collectAsStateWithLifecycle()
+    val lanIpAddresses by viewModel.lanIpAddresses.collectAsStateWithLifecycle()
     val apiRequestLogs by viewModel.apiRequestLogs.collectAsStateWithLifecycle()
     val isBusy by viewModel.isBusy.collectAsStateWithLifecycle()
     val toastMessage by viewModel.toastMessage.collectAsStateWithLifecycle()
@@ -102,11 +113,54 @@ fun ConsoleScaffold(
     val latestRelease by viewModel.latestRelease.collectAsStateWithLifecycle()
     val activeProfileId by viewModel.activeProfileId.collectAsStateWithLifecycle()
     val otpServiceEnabled by viewModel.otpServiceEnabled.collectAsStateWithLifecycle()
+    val simDiagnostics by viewModel.simDiagnostics.collectAsStateWithLifecycle()
+    val transportMode by viewModel.transportMode.collectAsStateWithLifecycle()
+    val twilioConfig by viewModel.twilioConfig.collectAsStateWithLifecycle()
 
     var activeTab by remember { mutableStateOf(ConsoleTab.OVERVIEW) }
     var messagingSubTab by remember { mutableStateOf(MessagingSubTab.SEND_SMS) }
     var showProfileSwitcher by remember { mutableStateOf(false) }
+    var pendingSmsAction by remember { mutableStateOf<(() -> Unit)?>(null) }
     val snackbarHostState = remember { SnackbarHostState() }
+
+    val smsPermissionLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.RequestPermission()
+    ) { granted ->
+        viewModel.refreshSimDiagnostics()
+        val action = pendingSmsAction
+        pendingSmsAction = null
+        if (granted) {
+            if (action != null) {
+                action()
+            } else {
+                scope.launch { snackbarHostState.showSnackbar("SIM SMS permission enabled") }
+            }
+        } else {
+            scope.launch {
+                snackbarHostState.showSnackbar("Allow SMS permission so PulseRelay can send texts via your SIM card.")
+            }
+        }
+    }
+
+    DisposableEffect(lifecycleOwner) {
+        val observer = LifecycleEventObserver { _, event ->
+            if (event == Lifecycle.Event.ON_RESUME) {
+                viewModel.refreshSimDiagnostics()
+            }
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
+    }
+
+    val runWithSmsPermission: (() -> Unit) -> Unit = { action ->
+        viewModel.refreshSimDiagnostics()
+        if (transportMode == SmsTransportMode.GSM_SIM && !simDiagnostics.hasSendSmsPermission) {
+            pendingSmsAction = action
+            smsPermissionLauncher.launch(Manifest.permission.SEND_SMS)
+        } else {
+            action()
+        }
+    }
 
     val loadedData = (dashboardState as? UiState.Success)?.data
     val activeProfile = loadedData?.teamProfiles?.firstOrNull { it.id == activeProfileId }
@@ -319,14 +373,23 @@ fun ConsoleScaffold(
                                     data = data,
                                     activeProfile = activeProfile,
                                     otpServiceEnabled = otpServiceEnabled,
+                                    simDiagnostics = simDiagnostics,
+                                    transportMode = transportMode,
+                                    twilioConfigured = twilioConfig.isConfigured(),
                                     isServerRunning = isServerRunning,
                                     serverPort = serverPort,
+                                    lanIpAddresses = lanIpAddresses,
                                     isBusy = isBusy,
                                     lastOtpCheck = lastOtpCheck,
+                                    onRequestSmsPermission = {
+                                        smsPermissionLauncher.launch(Manifest.permission.SEND_SMS)
+                                    },
                                     onToggleServer = { viewModel.toggleApiServer(it) },
                                     onToggleOtpService = { viewModel.toggleOtpService(it) },
                                     onSendQuickOtp = { to, from, svc, len, ch, ttl ->
-                                        viewModel.sendOtpFromConsole(to, from, svc, len, ch, data, ttl)
+                                        runWithSmsPermission {
+                                            viewModel.sendOtpFromConsole(to, from, svc, len, ch, data, ttl)
+                                        }
                                     },
                                     onVerifyQuickOtp = { to, code ->
                                         viewModel.verifyOtpFromConsole(to, code, data)
@@ -364,15 +427,26 @@ fun ConsoleScaffold(
                                 ConsoleTab.MESSAGING -> MessagingVerifyScreen(
                                     data = data,
                                     initialSubTab = messagingSubTab,
+                                    simDiagnostics = simDiagnostics,
+                                    transportMode = transportMode,
+                                    twilioConfigured = twilioConfig.isConfigured(),
                                     isBusy = isBusy,
                                     lastOtpCheck = lastOtpCheck,
                                     calculateSegments = { viewModel.calculateSegments(it) },
                                     estimatePrice = { segs, tier, to -> viewModel.estimatePrice(segs, tier, to) },
+                                    onRequestSmsPermission = {
+                                        smsPermissionLauncher.launch(Manifest.permission.SEND_SMS)
+                                    },
+                                    onOpenApiSettings = { activeTab = ConsoleTab.API },
                                     onSendSms = { to, from, body ->
-                                        viewModel.sendSmsFromConsole(to, from, body, data)
+                                        runWithSmsPermission {
+                                            viewModel.sendSmsFromConsole(to, from, body, data)
+                                        }
                                     },
                                     onSendOtp = { to, from, svc, len, ch ->
-                                        viewModel.sendOtpFromConsole(to, from, svc, len, ch, data)
+                                        runWithSmsPermission {
+                                            viewModel.sendOtpFromConsole(to, from, svc, len, ch, data)
+                                        }
                                     },
                                     onCheckOtp = { to, code ->
                                         viewModel.verifyOtpFromConsole(to, code, data)
@@ -407,20 +481,40 @@ fun ConsoleScaffold(
                                     data = data,
                                     userUid = viewModel.currentUserId,
                                     userEmail = userEmail,
+                                    simDiagnostics = simDiagnostics,
+                                    transportMode = transportMode,
+                                    twilioConfig = twilioConfig,
                                     isServerRunning = isServerRunning,
                                     serverPort = serverPort,
+                                    lanBindEnabled = lanBindEnabled,
+                                    lanIpAddresses = lanIpAddresses,
                                     isBusy = isBusy,
                                     lastApiResult = lastApiResult,
                                     requestLogs = apiRequestLogs,
                                     firebaseLatencyMs = firebaseLatencyMs,
                                     fetchedRepos = fetchedRepos,
                                     latestRelease = latestRelease,
+                                    onRequestSmsPermission = {
+                                        smsPermissionLauncher.launch(Manifest.permission.SEND_SMS)
+                                    },
+                                    onSelectTransportMode = { viewModel.setTransportMode(it) },
+                                    onSaveTwilioConfig = { sid, token, from ->
+                                        viewModel.updateTwilioConfig(sid, token, from)
+                                    },
+                                    onToggleLanBind = { viewModel.toggleLanBind(it) },
+                                    onRefreshLanIps = { viewModel.refreshSimDiagnostics() },
                                     onToggleServer = { viewModel.toggleApiServer(it) },
                                     onSavePlanSettings = { tier, direct, webhook ->
                                         viewModel.updateAccountSettings(tier, direct, webhook)
                                     },
                                     onExecuteHttpRequest = { method, path, secret, body ->
-                                        viewModel.executeLiveHttpApiCall(method, path, secret, body)
+                                        if (method == "POST") {
+                                            runWithSmsPermission {
+                                                viewModel.executeLiveHttpApiCall(method, path, secret, body)
+                                            }
+                                        } else {
+                                            viewModel.executeLiveHttpApiCall(method, path, secret, body)
+                                        }
                                     },
                                     onVerifyFirebase = { viewModel.verifyFirebaseSync() },
                                     onFetchRepos = { user, pat -> viewModel.fetchGitHubRepos(user, pat) },
@@ -428,7 +522,9 @@ fun ConsoleScaffold(
                                         viewModel.linkGitHubRepo(user, repo, to, mode, pat)
                                     },
                                     onTriggerCommitAlert = { item, pat ->
-                                        viewModel.triggerGitHubAlert(item, pat, data)
+                                        runWithSmsPermission {
+                                            viewModel.triggerGitHubAlert(item, pat, data)
+                                        }
                                     },
                                     onInstallWebhook = { item, pat, url ->
                                         viewModel.installGitHubWebhook(item, pat, url)

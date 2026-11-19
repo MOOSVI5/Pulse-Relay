@@ -1,5 +1,6 @@
 package com.example.ui.viewmodel
 
+import android.content.Context
 import android.util.Log
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
@@ -25,9 +26,13 @@ import com.example.data.model.TeamRole
 import com.example.engine.GitHubApiClient
 import com.example.engine.GitHubReleaseInfo
 import com.example.engine.GitHubRepoSummary
+import com.example.engine.GsmSimSmsSender
 import com.example.engine.OtpCheckResult
 import com.example.engine.PulseApiServer
 import com.example.engine.SendingEngine
+import com.example.engine.SimDiagnostics
+import com.example.engine.SmsTransportMode
+import com.example.engine.TwilioGatewayConfig
 import com.google.firebase.firestore.FirebaseFirestoreException
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
@@ -73,20 +78,24 @@ data class ApiExecutionResult(
 
 class PulseConsoleViewModel(
     private val repository: PulseRepository,
-    val currentUserId: String
+    val currentUserId: String,
+    appContext: Context? = null
 ) : ViewModel() {
 
-    private val sendingEngine = SendingEngine(repository, viewModelScope)
+    private val gsmSimSmsSender = GsmSimSmsSender(appContext?.applicationContext)
+    private val sendingEngine = SendingEngine(repository, viewModelScope, gsmSimSmsSender)
     private val apiServer = PulseApiServer(sendingEngine, viewModelScope)
     private val githubClient = GitHubApiClient()
     private val secureRandom = SecureRandom()
     private val playgroundHttpClient = OkHttpClient.Builder()
-        .connectTimeout(5, TimeUnit.SECONDS)
-        .readTimeout(5, TimeUnit.SECONDS)
+        .connectTimeout(10, TimeUnit.SECONDS)
+        .readTimeout(30, TimeUnit.SECONDS)
         .build()
 
     val isServerRunning: StateFlow<Boolean> = apiServer.isRunning
     val serverPort: StateFlow<Int> = apiServer.port
+    val lanBindEnabled: StateFlow<Boolean> = apiServer.lanBindEnabled
+    val lanIpAddresses: StateFlow<List<String>> = apiServer.lanIpAddresses
     val apiRequestLogs: StateFlow<List<ApiRequestLog>> = apiServer.requestLogs
 
     private val _toastMessage = MutableStateFlow<String?>(null)
@@ -115,6 +124,15 @@ class PulseConsoleViewModel(
 
     private val _otpServiceEnabled = MutableStateFlow(true)
     val otpServiceEnabled: StateFlow<Boolean> = _otpServiceEnabled.asStateFlow()
+
+    private val _transportMode = MutableStateFlow(SmsTransportMode.GSM_SIM)
+    val transportMode: StateFlow<SmsTransportMode> = _transportMode.asStateFlow()
+
+    private val _twilioConfig = MutableStateFlow(TwilioGatewayConfig())
+    val twilioConfig: StateFlow<TwilioGatewayConfig> = _twilioConfig.asStateFlow()
+
+    private val _simDiagnostics = MutableStateFlow(gsmSimSmsSender.diagnostics())
+    val simDiagnostics: StateFlow<SimDiagnostics> = _simDiagnostics.asStateFlow()
 
     private val _latestProfilesSnapshot = MutableStateFlow<List<TeamProfileRecord>>(emptyList())
 
@@ -164,6 +182,7 @@ class PulseConsoleViewModel(
                 messages = data.smsMessages,
                 otps = data.otpVerifications
             )
+            syncServerTransport()
         }
         .catch { error ->
             val firestoreError = generateSequence(error) { it.cause }
@@ -206,7 +225,51 @@ class PulseConsoleViewModel(
             if (seedResult.isFailure) {
                 _toastMessage.value = seedResult.exceptionOrNull()?.message ?: "Could not initialize workspace"
             }
-            apiServer.start(8765)
+            apiServer.start(8765, bindLan = true)
+            refreshSimDiagnostics()
+        }
+    }
+
+    private fun syncServerTransport() {
+        apiServer.syncTransport(
+            transportMode = _transportMode.value,
+            twilioConfig = _twilioConfig.value,
+            otpServiceEnabled = _otpServiceEnabled.value
+        )
+    }
+
+    fun refreshSimDiagnostics() {
+        _simDiagnostics.value = gsmSimSmsSender.diagnostics()
+        apiServer.refreshNetworkAddresses()
+    }
+
+    fun setTransportMode(mode: SmsTransportMode) {
+        _transportMode.value = mode
+        syncServerTransport()
+        _toastMessage.value = "SMS Transport set to ${mode.label}"
+    }
+
+    fun updateTwilioConfig(accountSid: String, authToken: String, fromNumber: String) {
+        _twilioConfig.value = TwilioGatewayConfig(
+            accountSid = accountSid.trim(),
+            authToken = authToken.trim(),
+            fromNumber = fromNumber.trim()
+        )
+        syncServerTransport()
+        _toastMessage.value = if (_twilioConfig.value.isConfigured()) {
+            "Twilio Cloud Gateway credentials active"
+        } else {
+            "Twilio Cloud credentials incomplete (check SID, Token & +From)"
+        }
+    }
+
+    fun toggleLanBind(enabled: Boolean) {
+        if (!requireActivePermission("configure REST API LAN access") { it.canControlService }) return
+        apiServer.setLanBindEnabled(enabled)
+        _toastMessage.value = if (enabled) {
+            "REST API exposed on Wi-Fi LAN & Localhost (:8765)"
+        } else {
+            "REST API restricted to Localhost (127.0.0.1:8765)"
         }
     }
 
@@ -255,6 +318,7 @@ class PulseConsoleViewModel(
     fun toggleOtpService(enabled: Boolean) {
         if (!requireActivePermission("pause or resume the OTP service") { it.canControlService }) return
         _otpServiceEnabled.value = enabled
+        syncServerTransport()
         _toastMessage.value = if (enabled) {
             "OTP SMS Sending Service is LIVE"
         } else {
@@ -306,7 +370,7 @@ class PulseConsoleViewModel(
             )
             _isBusy.value = false
             _toastMessage.value = if (res.isSuccess) {
-                "Updated ${displayName} (${role.label})"
+                "Updated $displayName (${role.label})"
             } else {
                 res.exceptionOrNull()?.message ?: "Failed to update team member"
             }
@@ -335,11 +399,12 @@ class PulseConsoleViewModel(
     fun toggleApiServer(start: Boolean) {
         if (!requireActivePermission("control the REST API engine") { it.canControlService }) return
         if (start) {
-            apiServer.start(8765)
-            _toastMessage.value = "Local REST API Server listening on http://127.0.0.1:8765"
+            apiServer.start(8765, lanBindEnabled.value)
+            val lanHint = apiServer.lanIpAddresses.value.firstOrNull()?.let { " & http://$it:8765" }.orEmpty()
+            _toastMessage.value = "REST API Server live on http://127.0.0.1:8765$lanHint"
         } else {
             apiServer.stop()
-            _toastMessage.value = "Local REST API Server stopped"
+            _toastMessage.value = "REST API Server stopped"
         }
     }
 
@@ -350,6 +415,7 @@ class PulseConsoleViewModel(
         data: ConsoleDashboardData
     ) {
         if (!requireActivePermission("send SMS messages") { it.canSendSms }) return
+        refreshSimDiagnostics()
         viewModelScope.launch {
             _isBusy.value = true
             val res = sendingEngine.sendSms(
@@ -359,11 +425,14 @@ class PulseConsoleViewModel(
                 direction = MessageDirection.OUTBOUND_CONSOLE,
                 apiKeyLabel = "Developer Console",
                 settings = data.settings,
-                ownedNumbers = data.phoneNumbers
+                ownedNumbers = data.phoneNumbers,
+                transportMode = _transportMode.value,
+                twilioConfig = _twilioConfig.value
             )
             _isBusy.value = false
             _toastMessage.value = if (res.isSuccess) {
-                "SMS queued to $toNumber (${res.getOrThrow().record.carrierName})"
+                val rec = res.getOrThrow().record
+                "SMS sent to ${rec.toNumber} via ${_transportMode.value.shortTag} (${rec.latencyMs}ms)"
             } else {
                 res.exceptionOrNull()?.message ?: "Failed to send SMS"
             }
@@ -384,6 +453,7 @@ class PulseConsoleViewModel(
             _toastMessage.value = "OTP Service is PAUSED. Turn it LIVE in Admin control first."
             return
         }
+        refreshSimDiagnostics()
         viewModelScope.launch {
             _isBusy.value = true
             val res = sendingEngine.sendOtpVerification(
@@ -396,12 +466,14 @@ class PulseConsoleViewModel(
                 direction = MessageDirection.OUTBOUND_CONSOLE,
                 apiKeyLabel = activeProfile()?.displayName ?: "Verify Console",
                 settings = data.settings,
-                ownedNumbers = data.phoneNumbers
+                ownedNumbers = data.phoneNumbers,
+                transportMode = _transportMode.value,
+                twilioConfig = _twilioConfig.value
             )
             _isBusy.value = false
             _toastMessage.value = if (res.isSuccess) {
                 val otp = res.getOrThrow()
-                "OTP ${otp.code} sent to ${otp.toNumber}"
+                "OTP ${otp.code} transmitted to ${otp.toNumber} via ${_transportMode.value.shortTag}"
             } else {
                 res.exceptionOrNull()?.message ?: "Failed to dispatch OTP"
             }
@@ -563,9 +635,10 @@ class PulseConsoleViewModel(
         bearerSecret: String,
         jsonBody: String
     ) {
+        refreshSimDiagnostics()
         viewModelScope.launch {
             if (!apiServer.isRunning.value) {
-                apiServer.start(8765)
+                apiServer.start(8765, lanBindEnabled.value)
             }
             _isBusy.value = true
             val result = withContext(Dispatchers.IO) {
@@ -645,7 +718,7 @@ class PulseConsoleViewModel(
     ) {
         viewModelScope.launch {
             if (!sendingEngine.isValidE164(toNumber)) {
-                _toastMessage.value = "Recipient must be valid E.164 format (e.g., +14155550199)"
+                _toastMessage.value = "Recipient must be valid E.164 format (e.g., +923001234567)"
                 return@launch
             }
             _isBusy.value = true
@@ -685,7 +758,7 @@ class PulseConsoleViewModel(
             val mode = GitHubTriggerMode.fromRaw(integration.triggerMode)
             val defaultFrom = data.phoneNumbers.firstOrNull { it.defaultSender }?.e164Number
                 ?: data.phoneNumbers.firstOrNull()?.e164Number
-                ?: "+14158904321"
+                ?: "+923008904321"
 
             if (commit != null) {
                 repository.updateGitHubIntegration(
@@ -709,7 +782,9 @@ class PulseConsoleViewModel(
                     direction = MessageDirection.OUTBOUND_API,
                     apiKeyLabel = "GitHub Integration",
                     settings = data.settings,
-                    ownedNumbers = data.phoneNumbers
+                    ownedNumbers = data.phoneNumbers,
+                    transportMode = _transportMode.value,
+                    twilioConfig = _twilioConfig.value
                 )
                 _isBusy.value = false
                 _toastMessage.value = if (otpRes.isSuccess) {
@@ -726,11 +801,13 @@ class PulseConsoleViewModel(
                     direction = MessageDirection.OUTBOUND_API,
                     apiKeyLabel = "GitHub Integration",
                     settings = data.settings,
-                    ownedNumbers = data.phoneNumbers
+                    ownedNumbers = data.phoneNumbers,
+                    transportMode = _transportMode.value,
+                    twilioConfig = _twilioConfig.value
                 )
                 _isBusy.value = false
                 _toastMessage.value = if (smsRes.isSuccess) {
-                    "GitHub alert SMS dispatched for $shaShort"
+                    "GitHub alert SMS sent via ${_transportMode.value.shortTag} for $shaShort"
                 } else {
                     smsRes.exceptionOrNull()?.message ?: "Failed to send GitHub SMS alert"
                 }

@@ -417,6 +417,12 @@ fun LandingScreen(
                                 StatusPill(text = "REST v1", color = TelemetryCyan)
                             }
 
+                            Text(
+                                text = "After signing in, open the bottom API tab (or Overview -> Open API Console) to copy your Bearer API key and Wi-Fi LAN / Localhost server URL (:8765).",
+                                style = MaterialTheme.typography.bodyMedium,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+
                             Row(
                                 modifier = Modifier.horizontalScroll(rememberScrollState()),
                                 horizontalArrangement = Arrangement.spacedBy(8.dp)
@@ -938,10 +944,10 @@ private fun PricingCard(
 
 private fun landingSnippetFor(lang: LandingSnippetLang): String = when (lang) {
     LandingSnippetLang.CURL -> """
-curl -X POST http://127.0.0.1:8765/v1/verify/send \
+curl -X POST http://<PHONE-IP>:8765/v1/verify/send \
   -H "Authorization: Bearer pr_live_your_key" \
   -H "Content-Type: application/json" \
-  -d '{"to":"+447700900412","length":6,"service":"MyApp"}'
+  -d '{"to":"+923001234567","length":6,"service":"PulseAuth"}'
     """.trimIndent()
 
     LandingSnippetLang.KOTLIN -> """

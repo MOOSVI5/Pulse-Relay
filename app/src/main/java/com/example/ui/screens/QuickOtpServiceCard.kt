@@ -80,6 +80,7 @@ fun QuickOtpServiceCard(
     canControlService: Boolean,
     canSendOtp: Boolean,
     serverPort: Int,
+    lanIp: String?,
     isBusy: Boolean,
     lastOtpCheck: OtpCheckResult?,
     onToggleOtpService: (Boolean) -> Unit,
@@ -87,6 +88,7 @@ fun QuickOtpServiceCard(
     onVerifyOtp: (to: String, code: String) -> Unit,
     onRevokeOtp: (OtpVerificationRecord) -> Unit,
     onClearOtpCheck: () -> Unit,
+    onOpenApi: () -> Unit,
     onCopied: (String) -> Unit,
     modifier: Modifier = Modifier
 ) {
@@ -96,6 +98,7 @@ fun QuickOtpServiceCard(
         ?: activeNumbers.firstOrNull { it.defaultSender }?.e164Number
         ?: activeNumbers.firstOrNull()?.e164Number
         ?: "+923008904321"
+    val apiHost = lanIp?.takeIf { it.isNotBlank() } ?: "127.0.0.1"
 
     var selectedSender by remember(defaultSender) { mutableStateOf(defaultSender) }
     var recipient by remember { mutableStateOf("+923001234567") }
@@ -303,27 +306,28 @@ fun QuickOtpServiceCard(
                 OutlinedButton(
                     onClick = {
                         val curl = """
-curl -X POST http://127.0.0.1:$serverPort/v1/verify/send \
+curl -X POST http://$apiHost:$serverPort/v1/verify/send \
   -H "Authorization: Bearer $activeKey" \
   -H "Content-Type: application/json" \
   -d '{"to":"$recipient","from":"$selectedSender","service":"$serviceName","length":$codeLength,"ttl_seconds":$ttlSeconds}'
                         """.trimIndent()
                         clipboard.setText(AnnotatedString(curl))
-                        onCopied("OTP API cURL copied")
+                        onCopied("OTP cURL copied · Opening API Console")
+                        onOpenApi()
                     },
                     shape = RoundedCornerShape(12.dp),
                     contentPadding = PaddingValues(horizontal = 12.dp, vertical = 10.dp),
                     modifier = Modifier
                         .heightIn(min = 48.dp)
-                        .testTag("quick_copy_otp_curl")
+                        .testTag("quick_open_api_button")
                 ) {
                     Icon(
                         imageVector = Icons.Rounded.ContentCopy,
-                        contentDescription = "Copy OTP API cURL",
+                        contentDescription = "Open API Console & Copy cURL",
                         modifier = Modifier.size(16.dp)
                     )
                     Spacer(Modifier.width(4.dp))
-                    Text("API", maxLines = 1)
+                    Text("Open API", maxLines = 1)
                 }
             }
 

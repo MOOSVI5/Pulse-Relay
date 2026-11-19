@@ -111,7 +111,8 @@ fun PulseRelayApp(
                         val db = FirebaseFirestore.getInstance(databaseId)
                         PulseConsoleViewModel(
                             repository = PulseRepository(db),
-                            currentUserId = uid
+                            currentUserId = uid,
+                            appContext = app.applicationContext
                         )
                     }
                 }

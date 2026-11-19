@@ -59,7 +59,10 @@ import com.example.data.model.SmsMessageRecord
 import com.example.data.model.TeamProfileRecord
 import com.example.data.model.TeamRole
 import com.example.engine.OtpCheckResult
+import com.example.engine.SimDiagnostics
+import com.example.engine.SmsTransportMode
 import com.example.ui.components.KpiMetricTile
+import com.example.ui.components.SimGatewayStatusBanner
 import com.example.ui.components.StatusPill
 import com.example.ui.components.ThroughputSparklineCanvas
 import com.example.ui.theme.JetBrainsMonoFont
@@ -74,10 +77,15 @@ fun ConsoleOverviewScreen(
     data: ConsoleDashboardData,
     activeProfile: TeamProfileRecord?,
     otpServiceEnabled: Boolean,
+    simDiagnostics: SimDiagnostics,
+    transportMode: SmsTransportMode,
+    twilioConfigured: Boolean,
     isServerRunning: Boolean,
     serverPort: Int,
+    lanIpAddresses: List<String>,
     isBusy: Boolean,
     lastOtpCheck: OtpCheckResult?,
+    onRequestSmsPermission: () -> Unit,
     onToggleServer: (Boolean) -> Unit,
     onToggleOtpService: (Boolean) -> Unit,
     onSendQuickOtp: (to: String, from: String, service: String, length: Int, channel: OtpChannel, ttlSeconds: Int) -> Unit,
@@ -100,13 +108,17 @@ fun ConsoleOverviewScreen(
     val planTier = PlanTier.fromRaw(settings?.planTier)
     val activeRole = TeamRole.fromRaw(activeProfile?.role)
     val profileActive = activeProfile?.active != false
-    val deliveredCount = data.smsMessages.count { MessageStatus.fromRaw(it.status) == MessageStatus.DELIVERED }
+    val deliveredCount = data.smsMessages.count {
+        val st = MessageStatus.fromRaw(it.status)
+        st == MessageStatus.DELIVERED || st == MessageStatus.SENT
+    }
     val deliveryRate = if (data.smsMessages.isEmpty()) 100 else ((deliveredCount * 100f) / data.smsMessages.size).toInt()
     val avgLatency = data.smsMessages.mapNotNull { it.latencyMs.takeIf { l -> l > 0 } }
         .average()
         .takeIf { !it.isNaN() }
         ?.toInt() ?: 112
     val verifiedOtps = data.otpVerifications.count { OtpStatus.fromRaw(it.status) == OtpStatus.APPROVED }
+    val primaryLanIp = lanIpAddresses.firstOrNull()
 
     val sparklineSeries = if (data.smsMessages.size >= 4) {
         data.smsMessages.take(10).reversed().map { it.latencyMs.coerceAtLeast(40L).toFloat() }
@@ -120,6 +132,20 @@ fun ConsoleOverviewScreen(
         horizontalAlignment = Alignment.CenterHorizontally,
         verticalArrangement = Arrangement.spacedBy(14.dp)
     ) {
+        // Real GSM SIM & Transport Diagnostics Banner
+        item {
+            SimGatewayStatusBanner(
+                simDiagnostics = simDiagnostics,
+                transportMode = transportMode,
+                twilioConfigured = twilioConfigured,
+                onRequestSmsPermission = onRequestSmsPermission,
+                onOpenApiSettings = onNavigateToApi,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .widthIn(max = 880.dp)
+            )
+        }
+
         // Simple 1-Tap OTP SMS Sending Service & Full Control
         item {
             QuickOtpServiceCard(
@@ -128,6 +154,7 @@ fun ConsoleOverviewScreen(
                 canControlService = profileActive && activeRole.canControlService,
                 canSendOtp = profileActive && activeRole.canSendOtp,
                 serverPort = serverPort,
+                lanIp = primaryLanIp,
                 isBusy = isBusy,
                 lastOtpCheck = lastOtpCheck,
                 onToggleOtpService = onToggleOtpService,
@@ -135,6 +162,7 @@ fun ConsoleOverviewScreen(
                 onVerifyOtp = onVerifyQuickOtp,
                 onRevokeOtp = onRevokeOtp,
                 onClearOtpCheck = onClearOtpCheck,
+                onOpenApi = onNavigateToApi,
                 onCopied = onCopied,
                 modifier = Modifier
                     .fillMaxWidth()
@@ -142,24 +170,7 @@ fun ConsoleOverviewScreen(
             )
         }
 
-        // Workspace Profiles & Team Member Roles
-        item {
-            TeamWorkspaceControlCard(
-                profiles = data.teamProfiles,
-                activeProfile = activeProfile,
-                isBusy = isBusy,
-                onOpenSwitcher = onOpenProfileSwitcher,
-                onSwitchToAdmin = onSwitchToAdmin,
-                onCreateMember = onCreateTeamMember,
-                onUpdateMember = onUpdateTeamMember,
-                onDeleteMember = onDeleteTeamMember,
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .widthIn(max = 880.dp)
-            )
-        }
-
-        // Live API Engine & Account Header Card
+        // Prominent REST API Gateway Card (Always Visible Near Top)
         item {
             Surface(
                 modifier = Modifier
@@ -167,11 +178,11 @@ fun ConsoleOverviewScreen(
                     .widthIn(max = 880.dp),
                 color = MaterialTheme.colorScheme.surfaceContainer,
                 shape = RoundedCornerShape(18.dp),
-                border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline)
+                border = BorderStroke(1.dp, TelemetryCyan.copy(alpha = 0.45f))
             ) {
                 Column(
                     modifier = Modifier.padding(16.dp),
-                    verticalArrangement = Arrangement.spacedBy(12.dp)
+                    verticalArrangement = Arrangement.spacedBy(10.dp)
                 ) {
                     Row(
                         modifier = Modifier.fillMaxWidth(),
@@ -188,17 +199,26 @@ fun ConsoleOverviewScreen(
                                 )
                                 Spacer(Modifier.width(8.dp))
                                 Text(
-                                    text = if (isServerRunning) "HTTP REST ENGINE LIVE" else "HTTP REST ENGINE PAUSED",
+                                    text = if (isServerRunning) "REST API GATEWAY LIVE" else "REST API GATEWAY PAUSED",
                                     style = MaterialTheme.typography.labelSmall,
                                     color = if (isServerRunning) SignalEmerald else WarningAmber
                                 )
                             }
                             Spacer(Modifier.height(4.dp))
                             Text(
-                                text = "http://127.0.0.1:$serverPort/v1",
+                                text = primaryLanIp?.let { "http://$it:$serverPort/v1" } ?: "http://127.0.0.1:$serverPort/v1",
                                 style = MaterialTheme.typography.titleMedium.copy(fontFamily = JetBrainsMonoFont),
-                                color = MaterialTheme.colorScheme.onSurface
+                                color = MaterialTheme.colorScheme.onSurface,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
                             )
+                            if (primaryLanIp != null) {
+                                Text(
+                                    text = "Localhost: http://127.0.0.1:$serverPort/v1",
+                                    style = MaterialTheme.typography.labelSmall.copy(fontFamily = JetBrainsMonoFont),
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            }
                         }
 
                         Switch(
@@ -210,6 +230,56 @@ fun ConsoleOverviewScreen(
                             ),
                             modifier = Modifier.testTag("overview_server_switch")
                         )
+                    }
+
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Button(
+                            onClick = onNavigateToApi,
+                            colors = ButtonDefaults.buttonColors(containerColor = TelemetryCyan),
+                            shape = RoundedCornerShape(10.dp),
+                            modifier = Modifier
+                                .weight(1f)
+                                .testTag("overview_open_api_button")
+                        ) {
+                            Icon(
+                                imageVector = Icons.Rounded.Api,
+                                contentDescription = null,
+                                tint = Color(0xFF070B14),
+                                modifier = Modifier.size(16.dp)
+                            )
+                            Spacer(Modifier.width(6.dp))
+                            Text(
+                                text = "Open API Console & Keys",
+                                color = Color(0xFF070B14),
+                                style = MaterialTheme.typography.labelMedium,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                        }
+
+                        OutlinedButton(
+                            onClick = {
+                                val endpoint = primaryLanIp?.let { "http://$it:$serverPort/v1" }
+                                    ?: "http://127.0.0.1:$serverPort/v1"
+                                clipboard.setText(AnnotatedString(endpoint))
+                                onCopied("API base URL copied: $endpoint")
+                            },
+                            shape = RoundedCornerShape(10.dp),
+                            contentPadding = PaddingValues(horizontal = 12.dp, vertical = 8.dp)
+                        ) {
+                            Icon(
+                                imageVector = Icons.Rounded.ContentCopy,
+                                contentDescription = "Copy API URL",
+                                tint = TelemetryCyan,
+                                modifier = Modifier.size(16.dp)
+                            )
+                            Spacer(Modifier.width(4.dp))
+                            Text("Copy URL", style = MaterialTheme.typography.labelMedium)
+                        }
                     }
 
                     Row(
@@ -249,6 +319,23 @@ fun ConsoleOverviewScreen(
                     }
                 }
             }
+        }
+
+        // Workspace Profiles & Team Member Roles
+        item {
+            TeamWorkspaceControlCard(
+                profiles = data.teamProfiles,
+                activeProfile = activeProfile,
+                isBusy = isBusy,
+                onOpenSwitcher = onOpenProfileSwitcher,
+                onSwitchToAdmin = onSwitchToAdmin,
+                onCreateMember = onCreateTeamMember,
+                onUpdateMember = onUpdateTeamMember,
+                onDeleteMember = onDeleteTeamMember,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .widthIn(max = 880.dp)
+            )
         }
 
         // 2x2 KPI Grid
@@ -568,6 +655,13 @@ private fun CompactMessageRow(
                 maxLines = 2,
                 overflow = TextOverflow.Ellipsis
             )
+            if (!msg.errorMessage.isNullOrBlank()) {
+                Text(
+                    text = "Error: ${msg.errorMessage}",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = PulseCrimson
+                )
+            }
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.SpaceBetween
@@ -578,9 +672,13 @@ private fun CompactMessageRow(
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
                 Text(
-                    text = if (msg.latencyMs > 0) "${msg.latencyMs}ms · $${String.format("%.4f", msg.priceUsd)}" else "Routing...",
+                    text = when {
+                        status == MessageStatus.FAILED -> "Failed"
+                        msg.latencyMs > 0 -> "${msg.latencyMs}ms · $${String.format("%.4f", msg.priceUsd)}"
+                        else -> "Routing..."
+                    },
                     style = MaterialTheme.typography.labelSmall.copy(fontSize = 10.sp),
-                    color = SignalEmerald
+                    color = if (status == MessageStatus.FAILED) PulseCrimson else SignalEmerald
                 )
             }
         }

@@ -3,6 +3,9 @@ package com.example
 import com.example.data.model.GlobalCountryCatalog
 import com.example.data.model.PlanTier
 import com.example.data.model.TeamRole
+import com.example.engine.GsmSimSmsSender
+import com.example.engine.SmsTransportMode
+import com.example.engine.TwilioGatewayConfig
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
@@ -58,6 +61,23 @@ class SendingEngineUnitTest {
         assertFalse("4155550199".matches(regex))
         assertFalse("+01234567".matches(regex))
         assertFalse("+123".matches(regex))
+    }
+
+    @Test
+    fun gsmSender_headlessDiagnostics_doesNotCrash() {
+        val sender = GsmSimSmsSender(null)
+        val diag = sender.diagnostics()
+        assertFalse(diag.hasTelephony)
+        assertFalse(diag.hasSendSmsPermission)
+        assertTrue(diag.simAbsent)
+        assertEquals(SmsTransportMode.GSM_SIM.shortTag, "GSM SIM")
+    }
+
+    @Test
+    fun twilioGatewayConfig_validatesCredentials() {
+        assertFalse(TwilioGatewayConfig().isConfigured())
+        assertFalse(TwilioGatewayConfig("invalid", "1234567890123456", "+14155550199").isConfigured())
+        assertTrue(TwilioGatewayConfig("AC1234567890abcdef", "secret_token_123456", "+14155550199").isConfigured())
     }
 
     @Test
